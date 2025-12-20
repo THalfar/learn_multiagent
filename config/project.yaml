@@ -1,0 +1,31 @@
+# Gymnasium environment
+environment:
+  name: "CartPole-v1"
+  max_episode_steps: 500
+
+# Stable-Baselines3 algorithm
+algorithm:
+  name: "PPO"
+  parameters:
+    learning_rate: 0.0003
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+
+# Training settings
+training:
+  total_timesteps: 50000
+  eval_frequency: 10000
+  n_eval_episodes: 10
+
+# Video recording
+video:
+  enabled: true
+  output_dir: "output/videos"
+  record_frequency: 10000
+
+# Agent loop settings
+agents:
+  max_iterations: 3
+  success_threshold: 195

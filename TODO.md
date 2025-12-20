@@ -41,7 +41,11 @@ learn_multiagent/
 ## Phase 2: YAML Configuration
 
 ### config/project.yaml
-- [ ] Create project.yaml:
+- [x] Create project.yaml:
+  > Copied exact YAML from TODO.md spec to `config/project.yaml`.
+  > **Why**: Centralizes tunable RL params (CartPole-v1 env, PPO hyperparams, training/video settings).
+  > **How**: Nested YAML dict; e.g., `agents.max_iterations: 3` syncs with current graph loop.
+  > **Learning**: Config-first design; Phase 3 `config_loader.py` will parse to Python attrs/dot access.
 ````yaml
 # Gymnasium environment
 environment:
@@ -77,7 +81,11 @@ agents:
 ````
 
 ### config/prompts.yaml
-- [ ] Create prompts.yaml:
+- [x] Create prompts.yaml:
+  > Copied exact multi-line templates/system prompts to `config/prompts.yaml`.
+  > **Why**: Externalizes LLM behavior; iterate prompts without code changes.
+  > **How**: YAML `|` blocks preserve newlines; {placeholders} injected at runtime (e.g. {tasks}, {code}).
+  > **Learning**: JSON-only outputs for parsing; structured prompts reduce hallucinations.
 ````yaml
 manager:
   system: |
