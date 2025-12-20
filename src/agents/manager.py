@@ -1,26 +1,30 @@
-def manager_node(state):
-    """
-    Manager analyzes the situation, creates/updates task list, selects next task.
-    """
-    # Placeholder: In real impl, use LLM chain with prompt based on state
-    prompt = f"""
-    Current state:
-    Tasks: {state.get('tasks', [])}
-    Current task: {state.get('current_task', '')}
-    Code: {state.get('code', '')}
-    Test results: {state.get('test_results', '')}
-    Review feedback: {state.get('review_feedback', '')}
-    Iteration: {state.get('iteration', 0)}
+import json
+from .base import BaseAgent
 
-    Analyze and create/update task list for developing CartPole-v1 RL solution.
-    Output format:
-    tasks: list of str
-    current_task: str (next task or 'done')
-    """
-    # response = llm.invoke(prompt)
-    # Parse response to update state
-    return {
-        "tasks": ["Initialize Gymnasium environment", "Implement basic DQN agent", "Train and evaluate"],
-        "current_task": "Initialize Gymnasium environment",
-        "iteration": 1
-    }
+class Manager(BaseAgent):
+    def __call__(self, state: dict) -> dict:
+        self.logger.info("Manager deciding next task")
+        prompt_dict = self.config.get_prompt("manager")
+        code_summary = (state.get("code", "")[:200] or "") + "..." if len(state.get("code", "")) > 200 else state.get("code", "")
+        task_template = prompt_dict["task_template"].format(
+            tasks=state.get("tasks", []),
+            code_summary=code_summary,
+            test_results=state.get("test_results", ""),
+            review_feedback=state.get("review_feedback", ""),
+            iteration=state.get("iteration", 0),
+            max_iterations=self.config.agents.max_iterations,
+        )
+        full_prompt = prompt_dict["system"] + "\n\n" + task_template
+        response = self.llm.invoke(full_prompt)
+        try:
+            parsed = json.loads(response.content.strip())
+            next_task = parsed.get("next_task", "No task decided")
+            self.logger.info(f"Manager chose: {next_task}")
+            return {
+                "tasks": state.get("tasks", []) + [next_task],
+                "current_task": next_task,
+                "iteration": 1,
+            }
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Manager JSON parse error: {e}")
+            return {"current_task": "error: invalid JSON from LLM"}

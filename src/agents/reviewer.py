@@ -1,16 +1,25 @@
-def reviewer_node(state):
-    """
-    Reviewer evaluates code, test results, provides feedback.
-    """
-    prompt = f"""
-    Code: {state['code']}
-    Test results: {state['test_results']}
+import json
+from .base import BaseAgent
 
-    Review for quality, efficiency, RL best practices for CartPole.
-    Decide if ready (Solved: avg reward >195 over 100 episodes) or needs iteration.
-    Output: feedback str, ready: bool
-    """
-    # response = llm.invoke(prompt)
-    return {
-        "review_feedback": "Placeholder feedback: Basic env setup good, but need DQN implementation.",
-    }
+class Reviewer(BaseAgent):
+    def __call__(self, state: dict) -> dict:
+        self.logger.info("Reviewer evaluating code & results")
+        prompt_dict = self.config.get_prompt("reviewer")
+        task_template = prompt_dict["task_template"].format(
+            code=state.get("code", ""),
+            test_results=state.get("test_results", ""),
+            success_threshold=self.config.agents.success_threshold,
+        )
+        full_prompt = prompt_dict["system"] + "\n\n" + task_template
+        response = self.llm.invoke(full_prompt)
+        try:
+            parsed = json.loads(response.content.strip())
+            approved = parsed.get("approved", False)
+            feedback = parsed.get("feedback", "No feedback")
+            self.logger.info(f"Reviewer approved: {approved} | Feedback: {feedback[:50]}...")
+            return {
+                "review_feedback": feedback,
+            }
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Reviewer parse error: {e}")
+            return {"review_feedback": "parse error"}

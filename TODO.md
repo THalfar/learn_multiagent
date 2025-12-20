@@ -155,11 +155,16 @@ reviewer:
   > `Config` class with @property for `environment`, `algorithm` etc.; `get_prompt(agent)` returns dict{'system', 'task_template'}.
 
 ## Phase 4: Refactor Agents
-- [ ] src/agents/base.py - BaseAgent class with LLM call + logging
-- [ ] src/agents/manager.py - uses prompts.yaml
-- [ ] src/agents/coder.py - uses prompts.yaml + project.yaml
-- [ ] src/agents/tester.py - executes code, records video
-- [ ] src/agents/reviewer.py - uses prompts.yaml
+- [x] src/agents/base.py - BaseAgent class with LLM call + logging
+  > BaseAgent loads config, LLM (.env), logger. `__call__(state)` callable for LangGraph.
+- [x] src/agents/manager.py - uses prompts.yaml
+  > Manager class: formats template with state/config, LLM → parse JSON next_task/reasoning, updates tasks.
+- [x] src/agents/coder.py - uses prompts.yaml + project.yaml
+  > Coder class: formats with task/env/algo/params/video_dir + existing code, LLM → extracts full code string.
+- [x] src/agents/tester.py - executes code, records video
+  > Tester class: dummy metrics → LLM summarize/parse JSON (Phase 5 real exec/subprocess/video).
+- [x] src/agents/reviewer.py - uses prompts.yaml
+  > Reviewer class: formats code/tests/threshold, LLM → parse JSON feedback/approved.
 
 ## Phase 5: Tester Agent (Real Implementation)
 - [ ] Save generated code to output/code/
