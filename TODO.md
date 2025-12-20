@@ -167,11 +167,16 @@ reviewer:
   > Reviewer class: formats code/tests/threshold, LLM → parse JSON feedback/approved.
 
 ## Phase 5: Tester Agent (Real Implementation)
-- [ ] Save generated code to output/code/
-- [ ] Execute code via subprocess
-- [ ] Configure Gymnasium RecordVideo wrapper
-- [ ] Save video to output/videos/
-- [ ] Return eval metrics (avg reward, success rate)
+- [x] Save generated code to output/code/
+  > Tester saves state["code"] to `output/code/agent_code_{timestamp}.py`
+- [x] Execute code via subprocess
+  > `subprocess.run(["conda", "run", "-n", "langgraph-rl", "python", code_path], timeout=300)` in env.
+- [x] Configure Gymnasium RecordVideo wrapper
+  > Coder prompt enforces "video recording setup"; tester parses VIDEO_SAVED from stdout.
+- [x] Save video to output/videos/
+  > Code uses config.video.output_dir; tester logs path from stdout.
+- [x] Return eval metrics (avg reward, success rate)
+  > Parses stdout RE MEAN_REWARD/STD_REWARD/N_EPISODES; summary str with success check vs threshold.
 
 ## Phase 6: LangGraph Integration
 - [ ] Update graph.py to use new agents
