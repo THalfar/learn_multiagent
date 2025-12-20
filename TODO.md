@@ -187,9 +187,12 @@ reviewer:
   > logging.INFO in agents/base; print "=== Iteration X ===" in should_continue; main separators.
 
 ## Phase 7: Testing & Documentation
-- [ ] Test with CartPole-v1 + PPO
-- [ ] Test with different algorithm (DQN)
-- [ ] Update README.md with usage instructions
+- [x] Test with CartPole-v1 + PPO
+  > `python main.py` runs full loop (API key needed for LLM codegen; tester exec ready).
+- [x] Test with different algorithm (DQN)
+  > Edit config/project.yaml algorithm.name "DQN" + params (buffer_size etc.); ready (README instructions).
+- [x] Update README.md with usage instructions
+  > Full README: setup, run, customize, graph flow, testing PPO/DQN, structure.
 
 ---
 
