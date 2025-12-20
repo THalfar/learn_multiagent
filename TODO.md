@@ -179,9 +179,12 @@ reviewer:
   > Parses stdout RE MEAN_REWARD/STD_REWARD/N_EPISODES; summary str with success check vs threshold.
 
 ## Phase 6: LangGraph Integration
-- [ ] Update graph.py to use new agents
-- [ ] State reads max_iterations and success_threshold from YAML
-- [ ] Verbose logging at each step with clear separators
+- [x] Update graph.py to use new agents
+  > Created `src/graph.py` create_graph(config): instantiates agent classes, wires StateGraph, uses config max_iters.
+- [x] State reads max_iterations and success_threshold from YAML
+  > should_continue in graph.py uses config.agents.max_iterations; threshold in reviewer prompt.
+- [x] Verbose logging at each step with clear separators
+  > logging.INFO in agents/base; print "=== Iteration X ===" in should_continue; main separators.
 
 ## Phase 7: Testing & Documentation
 - [ ] Test with CartPole-v1 + PPO
