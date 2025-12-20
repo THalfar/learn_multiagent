@@ -146,9 +146,13 @@ reviewer:
 ````
 
 ## Phase 3: Config Loader
-- [ ] Create src/config_loader.py
-- [ ] Load and validate YAML files
-- [ ] Provide easy getters: `config.environment`, `config.get_prompt("manager")`
+- [x] Create src/config_loader.py
+  > Implemented `src/config_loader.py` with Pydantic models for project.yaml, dict for prompts.yaml.
+- [x] Load and validate YAML files
+  > `load_project_config()` uses Pydantic BaseModel.model_validate() for type/schema validation; `load_prompts()` simple yaml.safe_load.
+  > FileNotFoundError if missing; extra='forbid' rejects unknown keys.
+- [x] Provide easy getters: `config.environment`, `config.get_prompt("manager")`
+  > `Config` class with @property for `environment`, `algorithm` etc.; `get_prompt(agent)` returns dict{'system', 'task_template'}.
 
 ## Phase 4: Refactor Agents
 - [ ] src/agents/base.py - BaseAgent class with LLM call + logging

@@ -45,9 +45,9 @@ reviewer:
     You evaluate code quality, RL best practices, and training results.
   task_template: |
     Code:
-```python
+        ```python
     {code}
-```
+    ```
     
     Test results: {test_results}
     Success threshold: {success_threshold} average reward
