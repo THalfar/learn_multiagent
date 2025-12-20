@@ -1,0 +1,184 @@
+# TODO: LangGraph RL Dev Team
+
+## Project Structure
+````
+learn_multiagent/
+├── config/
+│   ├── project.yaml      # RL project settings
+│   └── prompts.yaml      # Agent prompts
+├── src/
+│   ├── agents/
+│   │   ├── manager.py
+│   │   ├── coder.py
+│   │   ├── tester.py
+│   │   └── reviewer.py
+│   ├── graph.py          # LangGraph definition
+│   └── config_loader.py  # YAML loader
+├── output/
+│   ├── code/             # Generated code
+│   └── videos/           # Gymnasium videos
+├── main.py
+├── TODO.md
+├── requirements.txt
+└── .env
+````
+
+---
+
+## Phase 1: Project Structure
+- [x] Create folder structure (src/, config/, output/)
+  > Created `config/`, `src/agents/`, `output/code/`, `output/videos/` using PowerShell `mkdir ..., -Force`.
+  > **Why**: Implements modular architecture - configs isolated, source organized by agent, outputs separated to avoid clutter.
+  > **How**: PowerShell `mkdir` creates nested directories recursively in one command.
+  > **Learning**: Clean structure essential for multi-agent projects; aligns with phases 2-7.
+- [x] Move agent logic to separate files
+  > Extracted placeholder nodes (`manager_node`, `coder_node`, `tester_node`, `reviewer_node`) from `main.py` to `src/agents/*.py`.
+  > Added imports in `main.py`; fixed iteration increment (`"iteration": 1` in manager) to prevent infinite loop.
+  > **Why**: SRP - each module handles one agent; easier to extend with LLM prompts (Phase 4).
+  > **How LangGraph connects**: Nodes are pure functions → state dict updates → graph edges define flow.
+  > **Learning**: Use `Annotated[int, operator.add]` + return `{"iteration": 1}` for counters; conditional edges route dynamically.
+
+## Phase 2: YAML Configuration
+
+### config/project.yaml
+- [ ] Create project.yaml:
+````yaml
+# Gymnasium environment
+environment:
+  name: "CartPole-v1"
+  max_episode_steps: 500
+
+# Stable-Baselines3 algorithm
+algorithm:
+  name: "PPO"
+  parameters:
+    learning_rate: 0.0003
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+
+# Training settings
+training:
+  total_timesteps: 50000
+  eval_frequency: 10000
+  n_eval_episodes: 10
+
+# Video recording
+video:
+  enabled: true
+  output_dir: "output/videos"
+  record_frequency: 10000
+
+# Agent loop settings
+agents:
+  max_iterations: 3
+  success_threshold: 195
+````
+
+### config/prompts.yaml
+- [ ] Create prompts.yaml:
+````yaml
+manager:
+  system: |
+    You are an RL project manager. You analyze the current state and decide the next task.
+    Be concise and focused on Stable-Baselines3 + Gymnasium best practices.
+  task_template: |
+    Current state:
+    - Tasks completed: {tasks}
+    - Code status: {code_summary}
+    - Test results: {test_results}
+    - Review feedback: {review_feedback}
+    - Iteration: {iteration}/{max_iterations}
+    
+    Decide the next task. Respond in JSON format only:
+    {{"next_task": "task description", "reasoning": "why this task"}}
+
+coder:
+  system: |
+    You are an RL engineer. You write clean Python code using Stable-Baselines3 and Gymnasium.
+    Always include proper imports, error handling, and video recording setup.
+  task_template: |
+    Task: {current_task}
+    Environment: {environment}
+    Algorithm: {algorithm}
+    Parameters: {parameters}
+    Video output: {video_dir}
+    
+    Write complete, runnable Python code. Output only code, no explanations.
+
+tester:
+  system: |
+    You are a code tester. You analyze test results and report metrics.
+  task_template: |
+    Code executed with results:
+    - Mean reward: {mean_reward}
+    - Std reward: {std_reward}
+    - Episodes: {n_episodes}
+    - Video saved: {video_path}
+    
+    Summarize the test results. Respond in JSON format:
+    {{"success": true/false, "summary": "brief summary", "metrics": {{}}}}
+
+reviewer:
+  system: |
+    You are a code reviewer specializing in reinforcement learning.
+    You evaluate code quality, RL best practices, and training results.
+  task_template: |
+    Code:
+```python
+    {code}
+```
+    
+    Test results: {test_results}
+    Success threshold: {success_threshold} average reward
+    
+    Review and respond in JSON format only:
+    {{"approved": true/false, "feedback": "detailed feedback", "suggestions": ["suggestion1", "suggestion2"]}}
+````
+
+## Phase 3: Config Loader
+- [ ] Create src/config_loader.py
+- [ ] Load and validate YAML files
+- [ ] Provide easy getters: `config.environment`, `config.get_prompt("manager")`
+
+## Phase 4: Refactor Agents
+- [ ] src/agents/base.py - BaseAgent class with LLM call + logging
+- [ ] src/agents/manager.py - uses prompts.yaml
+- [ ] src/agents/coder.py - uses prompts.yaml + project.yaml
+- [ ] src/agents/tester.py - executes code, records video
+- [ ] src/agents/reviewer.py - uses prompts.yaml
+
+## Phase 5: Tester Agent (Real Implementation)
+- [ ] Save generated code to output/code/
+- [ ] Execute code via subprocess
+- [ ] Configure Gymnasium RecordVideo wrapper
+- [ ] Save video to output/videos/
+- [ ] Return eval metrics (avg reward, success rate)
+
+## Phase 6: LangGraph Integration
+- [ ] Update graph.py to use new agents
+- [ ] State reads max_iterations and success_threshold from YAML
+- [ ] Verbose logging at each step with clear separators
+
+## Phase 7: Testing & Documentation
+- [ ] Test with CartPole-v1 + PPO
+- [ ] Test with different algorithm (DQN)
+- [ ] Update README.md with usage instructions
+
+---
+
+## Out of Scope (for now)
+- No Optuna integration yet
+- No complex environments (classic control only)
+- No custom reward functions
+
+## Goal
+````bash
+python main.py --config config/project.yaml
+````
+→ Agents read YAML configs
+→ Discuss and generate code
+→ Training runs
+→ Video saved
+→ Results reported
