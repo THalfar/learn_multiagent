@@ -23,7 +23,7 @@ class Tester(BaseAgent):
 
         try:
             # Run in conda env with timeout
-            cmd = ["conda", "run", "-n", "langgraph-rl", "python", code_path]
+            cmd = ["python", code_path]
             result = subprocess.run(
                 cmd,
                 cwd=os.getcwd(),

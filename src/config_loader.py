@@ -30,6 +30,10 @@ class Agents(BaseModel):
     max_iterations: int
     success_threshold: int
 
+class Llm(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    model: str
+
 class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     environment: Environment
@@ -37,6 +41,7 @@ class ProjectConfig(BaseModel):
     training: Training
     video: Video
     agents: Agents
+    llm: Llm
 
 def load_project_config(path: str = 'config/project.yaml') -> ProjectConfig:
     """Load and validate project.yaml with Pydantic."""
@@ -80,6 +85,10 @@ class Config:
     def agents(self) -> Agents:
         return self.project.agents
 
+    @property
+    def llm(self) -> Llm:
+        return self.project.llm
+
     def get_prompt(self, agent_name: str) -> Dict[str, str]:
         """Get prompt dict for agent (e.g. 'manager')."""
         return self.prompts.get(agent_name, {})
@@ -95,6 +104,7 @@ if __name__ == "__main__":
     config = load_config()
     print(f"Environment: {config.environment.name} (max steps: {config.environment.max_episode_steps})")
     print(f"Algorithm: {config.algorithm.name}")
+    print(f"LLM Model: {config.llm.model}")
     print(f"Max iterations: {config.agents.max_iterations}")
     mgr_prompt = config.get_prompt("manager")
-    print(f"Manager system prompt preview: {mgr_prompt.get('system', '')[:100]}...")
+    print(f"Manager system preview: {mgr_prompt.get('system', '')[:100]}...")

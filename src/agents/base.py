@@ -12,13 +12,13 @@ class BaseAgent:
     def __init__(self, name: str):
         self.name = name
         load_dotenv()
+        self.config = load_config()
         self.llm = ChatOpenAI(
-            model="grok-beta",
+            model=self.config.llm.model,
             temperature=0,
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
         )
-        self.config = load_config()
         self.logger = logging.getLogger(f"agent.{name}")
 
     def __call__(self, state: dict) -> dict:

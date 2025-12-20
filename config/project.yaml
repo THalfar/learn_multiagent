@@ -29,3 +29,7 @@ video:
 agents:
   max_iterations: 3
   success_threshold: 195
+
+# LLM settings
+llm:
+  model: "grok-4-1-fast-reasoning"

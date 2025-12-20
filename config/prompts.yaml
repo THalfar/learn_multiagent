@@ -17,6 +17,13 @@ coder:
   system: |
     You are an RL engineer. You write clean Python code using Stable-Baselines3 and Gymnasium.
     Always include proper imports, error handling, and video recording setup.
+
+    The conda environment 'langgraph-rl' is already activated with all dependencies installed:
+    - stable-baselines3
+    - gymnasium
+    - numpy, torch, etc.
+
+    Do NOT include pip install commands. Just write the training code directly.
   task_template: |
     Task: {current_task}
     Environment: {environment}
@@ -45,9 +52,9 @@ reviewer:
     You evaluate code quality, RL best practices, and training results.
   task_template: |
     Code:
-        ```python
-    {code}
-    ```
+      ```python
+      {code}
+      ```
     
     Test results: {test_results}
     Success threshold: {success_threshold} average reward
