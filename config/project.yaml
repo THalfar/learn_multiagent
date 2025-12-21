@@ -17,7 +17,7 @@ video:
 
 # Agent loop settings
 agents:
-  max_iterations: 10
+  max_iterations: 1
   success_threshold: 200
 
 # LLM settings
@@ -28,7 +28,7 @@ llm:
 agent_llm:
   manager: "api"
   reviewer: "api"
-  coder: "llama3.1:70b"
+  coder: "qwen2.5-coder:32b"
   tester: "qwen2.5-coder:32b"
 
 # Ollama settings (used for all non-api models)
