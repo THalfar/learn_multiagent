@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated, List
+from typing import TypedDict, Annotated, List, Any
 import operator
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -10,6 +10,7 @@ from .agents.reviewer import Reviewer
 import logging
 
 logging.basicConfig(level=logging.INFO)
+from rich import print
 
 def create_graph(config: Config):
     class AgentState(TypedDict):
@@ -20,21 +21,30 @@ def create_graph(config: Config):
         review_feedback: str
         iteration: Annotated[int, operator.add]
         messages: Annotated[list, add_messages]
-
-    def should_continue(state):
-        iteration = state.get("iteration", 0)
-        print(f"\n=== Iteration {iteration} complete. Max: {config.agents.max_iterations} ===")
-        if iteration >= config.agents.max_iterations:
-            print("=== MAX ITERATIONS REACHED - END ===")
+        run_id: str
+        video_dir: str
+        stats: Any
+        approved: bool
+    
+    def should_continue(state: AgentState) -> str:
+        # Check if manager said DONE
+        if state.get("current_task", "").upper() == "DONE":
             return "end"
-        print("=== CONTINUE LOOP ===")
+        
+        if state.get("approved", False):
+            return "end"
+        
+        # Check iteration limit
+        if state.get("iteration", 0) >= config.agents.max_iterations:
+            return "end"
+        
         return "manager"
 
     # Instantiate agents
-    manager = Manager("manager")
-    coder = Coder("coder")
-    tester = Tester("tester")
-    reviewer = Reviewer("reviewer")
+    manager = Manager(config)
+    coder = Coder(config)
+    tester = Tester(config)
+    reviewer = Reviewer(config)
 
     workflow = StateGraph(AgentState)
     workflow.add_node("manager", manager)

@@ -1,21 +1,11 @@
 # Gymnasium environment
 environment:
-  name: "CartPole-v1"
-  max_episode_steps: 500
-
-# Stable-Baselines3 algorithm
-algorithm:
-  name: "PPO"
-  parameters:
-    learning_rate: 0.0003
-    n_steps: 2048
-    batch_size: 64
-    n_epochs: 10
-    gamma: 0.99
+  name: "LunarLander-v2"
+  max_episode_steps: 1000
 
 # Training settings
 training:
-  total_timesteps: 50000
+  total_timesteps: 250000
   eval_frequency: 10000
   n_eval_episodes: 10
 
@@ -27,9 +17,23 @@ video:
 
 # Agent loop settings
 agents:
-  max_iterations: 3
-  success_threshold: 195
+  max_iterations: 10
+  success_threshold: 200
 
 # LLM settings
 llm:
   model: "grok-4-1-fast-reasoning"
+
+# LLM routing - which agent uses which model
+agent_llm:
+  manager: "api"
+  reviewer: "api"
+  coder: "llama3.1:70b"
+  tester: "qwen2.5-coder:32b"
+
+# Ollama settings (used for all non-api models)
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+
+test_name: "hybrid_llm_lunarlander_eka"

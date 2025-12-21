@@ -10,8 +10,8 @@ class Environment(BaseModel):
 
 class Algorithm(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    name: str = Field(..., description="Stable-Baselines3 algorithm")
-    parameters: Dict[str, Any]
+    name: str = Field(default="PPO", description="Stable-Baselines3 algorithm")
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 class Training(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -34,6 +34,18 @@ class Llm(BaseModel):
     model_config = ConfigDict(extra='forbid')
     model: str
 
+class OllamaConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    base_url: str
+    api_key: str
+
+class AgentLLMConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    manager: str
+    coder: str
+    tester: str
+    reviewer: str
+
 class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     environment: Environment
@@ -42,6 +54,9 @@ class ProjectConfig(BaseModel):
     video: Video
     agents: Agents
     llm: Llm
+    agent_llm: AgentLLMConfig
+    ollama: OllamaConfig
+    test_name: str
 
 def load_project_config(path: str = 'config/project.yaml') -> ProjectConfig:
     """Load and validate project.yaml with Pydantic."""
@@ -89,6 +104,17 @@ class Config:
     def llm(self) -> Llm:
         return self.project.llm
 
+    @property
+    def agent_llm(self) -> AgentLLMConfig:
+        return self.project.agent_llm
+
+    @property
+    def ollama(self) -> OllamaConfig:
+        return self.project.ollama
+            
+    @property
+    def test_name(self) -> str:
+        return self.project.test_name
     def get_prompt(self, agent_name: str) -> Dict[str, str]:
         """Get prompt dict for agent (e.g. 'manager')."""
         return self.prompts.get(agent_name, {})
