@@ -6,9 +6,7 @@ class Coder(BaseAgent):
         super().__init__(config, "coder")
 
     def __call__(self, state: dict) -> dict:
-        from src.utils.banners import print_agent_transition
-        print_agent_transition("manager", "coder")
-        self.logger.info(f"Coder generating code for '{state.get('current_task', 'unknown')}'")
+        # Coder doesn't talk - just works silently
         prompt_dict = self.config.get_prompt("coder")
         task_template = prompt_dict["task_template"].format(
             current_task=state.get("current_task", ""),
@@ -17,7 +15,16 @@ class Coder(BaseAgent):
         )
         full_prompt = prompt_dict["system"] + "\n\n" + task_template + f"\n\nExisting code:\n{state.get('code', '')}"
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
+        
+        # Print thinking process if using reasoning model (but no other output)
+        self.print_thinking(response.content)
+        
         code = response.content.strip()
+        
+        # Remove any thinking tags from code (shouldn't be there, but safety check)
+        import re
+        code = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
+        code = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
         
         # Strip markdown code blocks
         if code.startswith('```python'):
@@ -28,9 +35,13 @@ class Coder(BaseAgent):
             code = code[:-3].rstrip()
         code = code.strip()
         
-        print(f"[bold green]Coder output length: {len(code)} chars[/bold green]")
-        print("[bold green]=== GENERATED CODE PREVIEW ===[/bold green]")
-        preview = code[:1000] + "..." if len(code) > 1000 else code
-        print(f"[green]{preview}[/green]")
-        print("[bold green]=== END CODE PREVIEW ===[/bold green]")
+        # Log to conversation file
+        logger = state.get("conversation_logger")
+        if logger:
+            logger.log_coder(
+                iteration=state.get("iteration", 0),
+                code=code,
+                task=state.get("current_task", "")
+            )
+        
         return {"code": code}

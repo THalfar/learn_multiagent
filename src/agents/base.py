@@ -3,6 +3,7 @@ import os
 import time
 from src.utils.timer import AgentTiming, RunStatistics
 from langchain_openai import ChatOpenAI
+from rich.console import Console
 
 class BaseAgent:
     """
@@ -25,7 +26,7 @@ class BaseAgent:
                 api_key=os.getenv("OPENAI_API_KEY"),
                 temperature=0
             )
-            self.logger.info(f"Using API: {os.getenv('LLM_MODEL', 'grok-4-1-fast-reasoning')}")
+            # Using API - no log needed
         else:
             # Use Ollama with specified model
             self.llm = ChatOpenAI(
@@ -34,90 +35,234 @@ class BaseAgent:
                 api_key=config.ollama.api_key,
                 temperature=0
             )
-            self.logger.info(f"Using Ollama: {model_name}")
+            # Using Ollama - no log needed
         
         self.model_name = model_name
+    
+    def is_reasoning_model(self):
+        """Check if this agent uses a reasoning model (like qwq:32b)"""
+        reasoning_models = ["qwq", "deepseek", "qwen", "llama-reasoning"]
+        return any(rm in self.model_name.lower() for rm in reasoning_models)
+    
+    def print_thinking(self, content: str):
+        """Extract and print thinking tags from reasoning model responses with creative formatting"""
+        import re
+        # Check if thinking output is enabled in config
+        if not getattr(self.config.agents, 'show_thinking', False):
+            return
+        if not self.is_reasoning_model():
+            return
+        
+        # Try to find thinking tags - also check for reasoning without tags
+        think_patterns = [
+            (r'<think[^>]*>(.*?)</think[^>]*>', re.DOTALL | re.IGNORECASE),
+            (r'<thinking[^>]*>(.*?)</thinking[^>]*>', re.DOTALL | re.IGNORECASE),
+        ]
+        
+        # Also check for reasoning text that might not be in tags
+        # Some models output reasoning before the actual response
+        reasoning_indicators = [
+            r'(?:let me|let\'s|i need to|i should|first|thinking|reasoning)[^\.]*(?:\.|$)',
+        ]
+        
+        thinking_found = False
+        agent_colors = {
+            "manager": "blue",
+            "coder": "green", 
+            "tester": "yellow",
+            "reviewer": "magenta"
+        }
+        color = agent_colors.get(self.agent_name, "white")
+        
+        # Collect all thinking content
+        all_thinking = []
+        
+        for pattern, flags in think_patterns:
+            matches = re.finditer(pattern, content, flags)
+            for match in matches:
+                thinking_content = match.group(1).strip()
+                if thinking_content:
+                    # For coder, remove any code blocks from thinking
+                    if self.agent_name == "coder":
+                        # Remove code blocks from thinking content
+                        thinking_content = re.sub(r'```[a-z]*\n.*?```', '', thinking_content, flags=re.DOTALL)
+                        thinking_content = re.sub(r'`[^`]+`', '', thinking_content)
+                        thinking_content = thinking_content.strip()
+                        # Skip if it's mostly code (has many code indicators)
+                        code_indicators = ['import ', 'def ', 'class ', 'from ']
+                        if sum(1 for ind in code_indicators if ind in thinking_content) >= 2:
+                            continue  # Skip this thinking block, it's mostly code
+                    if thinking_content:
+                        all_thinking.append(thinking_content)
+        
+        # If no thinking tags found, try to extract reasoning from content
+        # Some reasoning models output thinking without tags
+        if not all_thinking and len(content) > 500:
+            # For coder, we need to be more careful - only extract thinking before code blocks
+            if self.agent_name == "coder":
+                # Find the first code block
+                code_block_match = re.search(r'```', content)
+                if code_block_match:
+                    # Only take content before the first code block
+                    content_before_code = content[:code_block_match.start()].strip()
+                    if len(content_before_code) > 100:  # Substantial thinking before code
+                        # Check it's not code (has code indicators)
+                        code_indicators = ['import ', 'def ', 'class ', 'from ', 'gymnasium', 'stable_baselines']
+                        if not any(indicator in content_before_code for indicator in code_indicators):
+                            # This looks like actual thinking, not code
+                            all_thinking.append(content_before_code)
+                # Don't try other extraction methods for coder if we found code blocks
+                if code_block_match:
+                    pass  # Already handled above
+                else:
+                    # No code blocks found, try normal extraction but be strict
+                    json_start = content.find('{')
+                    structure_start = json_start if json_start > 0 else len(content)
+                    if structure_start > 200:
+                        potential_reasoning = content[:structure_start].strip()
+                        code_indicators = ['import ', 'def ', 'class ', 'from ']
+                        if not any(indicator in potential_reasoning for indicator in code_indicators):
+                            cleaned = re.sub(r'^(okay|let me|let\'s|i need|i should|first|thinking|reasoning|so|therefore|now|well)[\s,]*', '', potential_reasoning, flags=re.IGNORECASE)
+                            if len(cleaned.split()) > 30:
+                                all_thinking.append(potential_reasoning)
+            else:
+                # For other agents, use normal extraction
+                json_start = content.find('{')
+                code_start = content.find('```')
+                structure_start = min([s for s in [json_start, code_start] if s > 0] or [len(content)])
+                
+                if structure_start > 200:
+                    potential_reasoning = content[:structure_start].strip()
+                    cleaned = re.sub(r'^(okay|let me|let\'s|i need|i should|first|thinking|reasoning|so|therefore|now|well)[\s,]*', '', potential_reasoning, flags=re.IGNORECASE)
+                    if len(cleaned.split()) > 30:
+                        all_thinking.append(potential_reasoning)
+        
+        if all_thinking:
+            # Print thinking with creative formatting - use Console for proper rich formatting
+            console = Console()
+            print()  # Empty line before thinking
+            print("─" * 70)
+            
+            # Header with agent color and emoji
+            if color == "blue":
+                console.print("[bold blue]💭 MANAGER THINKING[/bold blue]")
+            elif color == "green":
+                console.print("[bold green]💭 CODER THINKING[/bold green]")
+            elif color == "yellow":
+                console.print("[bold yellow]💭 TESTER THINKING[/bold yellow]")
+            elif color == "magenta":
+                console.print("[bold magenta]💭 REVIEWER THINKING[/bold magenta]")
+            else:
+                console.print(f"[bold]💭 {self.agent_name.upper()} THINKING[/bold]")
+            
+            print("─" * 70)
+            
+            # Print all thinking content with appropriate color
+            for i, thinking_content in enumerate(all_thinking, 1):
+                if len(all_thinking) > 1:
+                    if color == "blue":
+                        console.print(f"[blue]Thinking part {i}:[/blue]")
+                    elif color == "green":
+                        console.print(f"[green]Thinking part {i}:[/green]")
+                    elif color == "yellow":
+                        console.print(f"[yellow]Thinking part {i}:[/yellow]")
+                    elif color == "magenta":
+                        console.print(f"[magenta]Thinking part {i}:[/magenta]")
+                
+                # Split into paragraphs for better readability
+                paragraphs = thinking_content.split('\n\n')
+                for para in paragraphs:
+                    para = para.strip()
+                    if para:
+                        # Use italic style for thinking to differentiate from regular output
+                        if color == "blue":
+                            console.print(f"[italic blue]{para}[/italic blue]")
+                        elif color == "green":
+                            console.print(f"[italic green]{para}[/italic green]")
+                        elif color == "yellow":
+                            console.print(f"[italic yellow]{para}[/italic yellow]")
+                        elif color == "magenta":
+                            console.print(f"[italic magenta]{para}[/italic magenta]")
+                        else:
+                            console.print(f"[italic]{para}[/italic]")
+                        print()  # Space between paragraphs
+                
+                if i < len(all_thinking):
+                    print("─" * 70)
+            
+            print("─" * 70)
+            print()  # Empty line after thinking
 
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate token count (rough approximation: ~4 chars per token)"""
+        return len(text) // 4
+    
     def call_llm_timed(self, prompt, stats: 'RunStatistics', iteration: int):
-        # First call - show model info
+        # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
-            self.logger.info("=" * 50)
-            self.logger.info(f"🤖 [{self.agent_name.upper()}] MODEL INFO")
-            display_name = os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning") if self.model_name == "api" else self.model_name
-            self.logger.info(f"   Model: {display_name}")
-            self.logger.info(f"   Type: {'🌐 API' if self.model_name == 'api' else '💻 LOCAL (Ollama)'}")
-            if self.model_name != 'api':
-                # Verify Ollama model is loaded
-                try:
-                    import requests
-                    resp = requests.get("http://localhost:11434/api/tags", timeout=5)
-                    models = [m['name'] for m in resp.json().get('models', [])]
-                    if any(self.model_name in m for m in models):
-                        self.logger.info(f"   Status: ✅ Model available in Ollama")
-                    else:
-                        self.logger.warning(f"   Status: ⚠️ Model may need to be pulled")
-                        self.logger.info(f"   Available: {models[:5]}...")
-                except:
-                    self.logger.info(f"   Status: ⏳ Ollama connection pending")
-            self.logger.info("=" * 50)
         
         timing = AgentTiming(agent=self.agent_name, iteration=iteration)
         timing.start_time = time.time()
         
-        display_name = os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning") if self.model_name == "api" else self.model_name
-        self.logger.info(f"🔄 [{self.agent_name.upper()}] Calling {display_name}...")
+        # Estimate input tokens
+        timing.tokens_in = self.estimate_tokens(prompt)
         
+        # Don't log LLM calls - they're too verbose
         result = self.llm.invoke(prompt)
         
         timing.end_time = time.time()
         timing.duration = timing.end_time - timing.start_time
         
-        response_len = len(result.content) if hasattr(result, 'content') else len(str(result))
-        tokens_approx = response_len // 4  # Rough estimate
-        tokens_per_sec = tokens_approx / timing.duration if timing.duration > 0 else 0
+        # Try to get token usage from response metadata
+        if hasattr(result, 'response_metadata'):
+            usage = result.response_metadata.get('token_usage', {})
+            if usage:
+                timing.tokens_in = usage.get('prompt_tokens', timing.tokens_in)
+                timing.tokens_out = usage.get('completion_tokens', 0)
         
-        self.logger.info(f"✅ [{self.agent_name.upper()}] Done in {timing.duration:.1f}s (~{tokens_approx} tokens, {tokens_per_sec:.0f} tok/s)")
+        # If no usage info, estimate output tokens
+        if timing.tokens_out == 0 and hasattr(result, 'content'):
+            timing.tokens_out = self.estimate_tokens(result.content)
         
         stats.add_timing(timing)
         return result
+    
+    def print_token_stats(self, timing: AgentTiming):
+        """Print token statistics after agent response"""
+        if timing.tokens_in == 0 and timing.tokens_out == 0:
+            return  # No token data available
+        
+        total_tokens = timing.tokens_in + timing.tokens_out
+        tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
+        
+        agent_colors = {
+            "manager": "blue",
+            "coder": "green", 
+            "tester": "yellow",
+            "reviewer": "magenta"
+        }
+        color = agent_colors.get(self.agent_name, "white")
+        
+        # Use Console for proper rich formatting
+        console = Console()
+        if color == "blue":
+            console.print(f"[dim blue]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim blue]")
+        elif color == "green":
+            console.print(f"[dim green]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim green]")
+        elif color == "yellow":
+            console.print(f"[dim yellow]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim yellow]")
+        elif color == "magenta":
+            console.print(f"[dim magenta]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim magenta]")
+        else:
+            console.print(f"[dim]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim]")
 
     def call_llm(self, prompt):
-        # First call - show model info
+        # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
-            self.logger.info("=" * 50)
-            self.logger.info(f"🤖 [{self.agent_name.upper()}] MODEL INFO")
-            display_name = os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning") if self.model_name == "api" else self.model_name
-            self.logger.info(f"   Model: {display_name}")
-            self.logger.info(f"   Type: {'🌐 API' if self.model_name == 'api' else '💻 LOCAL (Ollama)'}")
-            if self.model_name != 'api':
-                # Verify Ollama model is loaded
-                try:
-                    import requests
-                    resp = requests.get("http://localhost:11434/api/tags", timeout=5)
-                    models = [m['name'] for m in resp.json().get('models', [])]
-                    if any(self.model_name in m for m in models):
-                        self.logger.info(f"   Status: ✅ Model available in Ollama")
-                    else:
-                        self.logger.warning(f"   Status: ⚠️ Model may need to be pulled")
-                        self.logger.info(f"   Available: {models[:5]}...")
-                except:
-                    self.logger.info(f"   Status: ⏳ Ollama connection pending")
-            self.logger.info("=" * 50)
-        
-        start_time = time.time()
-        display_name = os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning") if self.model_name == "api" else self.model_name
-        self.logger.info(f"🔄 [{self.agent_name.upper()}] Calling {display_name}...")
         
         result = self.llm.invoke(prompt)
-        
-        duration = time.time() - start_time
-        response_len = len(result.content) if hasattr(result, 'content') else len(str(result))
-        tokens_approx = response_len // 4  # Rough estimate
-        tokens_per_sec = tokens_approx / duration if duration > 0 else 0
-        
-        self.logger.info(f"✅ [{self.agent_name.upper()}] Done in {duration:.1f}s (~{tokens_approx} tokens, {tokens_per_sec:.0f} tok/s)")
         
         return result
 

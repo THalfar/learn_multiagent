@@ -8,6 +8,13 @@ class Environment(BaseModel):
     name: str = Field(..., description="Gymnasium environment name")
     max_episode_steps: int = Field(default=500)
 
+class EnvironmentStep(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(..., description="Gymnasium environment name")
+    max_episode_steps: int = Field(default=500)
+    success_threshold: int = Field(..., description="Reward threshold to consider solved")
+    execution_timeout: int = Field(default=900, description="Maximum execution time in seconds for tester (default: 900 = 15 minutes)")
+
 class Algorithm(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(default="PPO", description="Stable-Baselines3 algorithm")
@@ -28,7 +35,7 @@ class Video(BaseModel):
 class Agents(BaseModel):
     model_config = ConfigDict(extra='forbid')
     max_iterations: int
-    success_threshold: int
+    show_thinking: bool = Field(default=False, description="Show agent thinking process output")
 
 class Llm(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -49,6 +56,7 @@ class AgentLLMConfig(BaseModel):
 class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     environment: Environment
+    environment_progression: list[EnvironmentStep] = Field(default_factory=list, description="List of environments from easy to hard")
     training: Training
     video: Video
     agents: Agents
@@ -82,6 +90,10 @@ class Config:
     @property
     def environment(self) -> Environment:
         return self.project.environment
+    
+    @property
+    def environment_progression(self) -> list[EnvironmentStep]:
+        return self.project.environment_progression
 
 
     @property

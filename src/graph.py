@@ -9,7 +9,11 @@ from .agents.tester import Tester
 from .agents.reviewer import Reviewer
 import logging
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging to be less verbose - only show warnings and errors
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(message)s'
+)
 from rich import print
 
 def create_graph(config: Config):
@@ -21,19 +25,40 @@ def create_graph(config: Config):
         execution_stdout: str
         execution_stderr: str
         review_feedback: str
+        review_suggestions: str
+        environment_switch_review_feedback: str  # Reviewer's feedback from environment switch
+        manager_guidance: str  # Manager's intent/guidance for reviewer (what manager wanted)
         iteration: Annotated[int, operator.add]
         messages: Annotated[list, add_messages]
         run_id: str
         video_dir: str
         stats: Any
         approved: bool
+        current_env_index: int  # Index in environment_progression
+        solved_environments: List[str]  # List of environment names that have been solved
+        conversation_logger: Any  # Conversation logger instance
     
     def should_continue(state: AgentState) -> str:
         # Check if manager said DONE
         if state.get("current_task", "").upper() == "DONE":
             return "end"
         
+        # If approved, check if there are more environments to solve
         if state.get("approved", False):
+            env_progression = config.environment_progression
+            current_env_index = state.get("current_env_index", 0)
+            solved_environments = state.get("solved_environments", [])
+            
+            # If there are more environments, continue to manager (which will switch environments)
+            if env_progression and current_env_index + 1 < len(env_progression):
+                # Check if current environment is already in solved list
+                # If not, manager will add it and switch to next
+                current_env = env_progression[current_env_index]
+                if current_env.name not in solved_environments:
+                    # Continue to manager to handle environment switch
+                    return "manager"
+            
+            # All environments solved or no more environments, end the run
             return "end"
         
         # Check iteration limit

@@ -1,13 +1,46 @@
-# Gymnasium environment
-environment:
-  name: "LunarLander-v2"
-  max_episode_steps: 1000
+# Gymnasium environment progression (easy to hard)
+# Agent starts with first environment, optimizes it, then moves to next
+# Classic Control environments for faster iteration
+environment_progression:
+  - name: "CartPole-v1"
+    max_episode_steps: 500
+    success_threshold: 475  # Official threshold: 475.0 over 100 episodes
+    execution_timeout: 600  # 10 minutes (Classic Control environments are fast)
+  - name: "Pendulum-v1"
+    max_episode_steps: 200
+    success_threshold: -300  # Good performance: -200 to -300 (reward range: -1600 to -200)
+    execution_timeout: 600  # 10 minutes
+  - name: "Acrobot-v1"
+    max_episode_steps: 500
+    success_threshold: -100  # Official threshold: -100.0 over 100 episodes
+    execution_timeout: 600  # 10 minutes
+  - name: "MountainCar-v0"
+    max_episode_steps: 200
+    success_threshold: -110  # Official threshold: -110.0 over 100 episodes
+    execution_timeout: 600  # 10 minutes
+  - name: "LunarLander-v2"
+    max_episode_steps: 1000
+    success_threshold: 200  # Official threshold: 200.0 over 100 episodes (reward range: -250 to +250)
+    execution_timeout: 1800  # 30 minutes (Box2D environments are slower)
+  - name: "BipedalWalker-v3"
+    max_episode_steps: 1600
+    success_threshold: 300  # Official threshold: 300.0 over 100 episodes (reward range: -100 to 300+)
+    execution_timeout: 2400  # 40 minutes (complex continuous control)
+  - name: "CarRacing-v2"
+    max_episode_steps: 1000
+    success_threshold: 900  # Official threshold: 900.0 over 100 episodes (reward: -0.1/frame + 1000/N per tile)
+    execution_timeout: 3600  # 60 minutes (most complex, requires vision)
 
-# Training settings
+# Current environment (will be set automatically, starting from first)
+environment:
+  name: "CartPole-v1"
+  max_episode_steps: 500
+
+# Training settings (reduced for faster iteration)
 training:
-  total_timesteps: 250000
-  eval_frequency: 10000
-  n_eval_episodes: 10
+  total_timesteps: 100000
+  eval_frequency: 5000
+  n_eval_episodes: 5
 
 # Video recording
 video:
@@ -15,10 +48,10 @@ video:
   output_dir: "output/videos"
   record_frequency: 10000
 
-# Agent loop settings
+# Agent loop settings (reduced for faster iteration)
 agents:
-  max_iterations: 42
-  success_threshold: 230
+  max_iterations: 50
+  show_thinking: false  # Show agent thinking process (reasoning model output)
 
 # LLM settings
 llm:
@@ -26,14 +59,14 @@ llm:
 
 # LLM routing - which agent uses which model
 agent_llm:
-  manager:  "llama3.3:70b"
-  reviewer: "api"
+  manager:  "qwq:32b"
+  reviewer: "deepseek-r1:70b"
   coder:  "qwen3-coder:30b"
-  tester: "qwen3-coder:30b"
+  tester: "qwq:32b"
 
 # Ollama settings (used for all non-api models)
 ollama:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"
 
-test_name: "hybrid_llm_lunarlander_yo"
+test_name: "classic_control_fast"
