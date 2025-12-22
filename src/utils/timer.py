@@ -38,11 +38,58 @@ class RunStatistics:
             "max_time": max(durations)
         }
     
+    def get_agent_token_stats(self, agent: str) -> dict:
+        """Get token statistics for a specific agent"""
+        agent_timings = [t for t in self.timings if t.agent == agent]
+        if not agent_timings:
+            return {}
+        
+        tokens_in = [t.tokens_in for t in agent_timings if t.tokens_in > 0]
+        tokens_out = [t.tokens_out for t in agent_timings if t.tokens_out > 0]
+        
+        def calc_stats(values):
+            if not values:
+                return {}
+            sorted_vals = sorted(values)
+            n = len(sorted_vals)
+            median = sorted_vals[n // 2] if n % 2 == 1 else (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2
+            return {
+                "total": sum(values),
+                "avg": sum(values) / len(values),
+                "min": min(values),
+                "max": max(values),
+                "median": median,
+                "count": len(values)
+            }
+        
+        return {
+            "tokens_in": calc_stats(tokens_in),
+            "tokens_out": calc_stats(tokens_out),
+            "total_tokens": calc_stats([t.tokens_in + t.tokens_out for t in agent_timings if t.tokens_in > 0 or t.tokens_out > 0])
+        }
+    
+    def get_all_agents_token_stats(self) -> dict:
+        """Get token statistics for all agents"""
+        return {
+            agent: self.get_agent_token_stats(agent)
+            for agent in ["manager", "coder", "tester", "reviewer"]
+        }
+    
     def get_iteration_stats(self, iteration: int) -> dict:
         iter_timings = [t for t in self.timings if t.iteration == iteration]
+        agent_stats = {}
+        for t in iter_timings:
+            if t.agent not in agent_stats:
+                agent_stats[t.agent] = {"duration": 0, "tokens_in": 0, "tokens_out": 0}
+            agent_stats[t.agent]["duration"] = t.duration
+            agent_stats[t.agent]["tokens_in"] = t.tokens_in
+            agent_stats[t.agent]["tokens_out"] = t.tokens_out
+        
         return {
             "total_time": sum(t.duration for t in iter_timings),
-            "agents": {t.agent: t.duration for t in iter_timings}
+            "agents": {agent: stats["duration"] for agent, stats in agent_stats.items()},
+            "agent_tokens": {agent: {"tokens_in": stats["tokens_in"], "tokens_out": stats["tokens_out"]} 
+                           for agent, stats in agent_stats.items()}
         }
     
     def print_summary(self):
@@ -65,6 +112,37 @@ class RunStatistics:
             if stats:
                 print(f"{agent:<12} {stats['calls']:<8} {stats['total_time']:<10.1f}s {stats['avg_time']:<10.1f}s {stats['min_time']:<10.1f}s {stats['max_time']:<10.1f}s")
         
+        print("\n🔢 TOKEN STATISTICS BY AGENT:")
+        print("-"*60)
+        print(f"{'Agent':<12} {'Calls':<8} {'Tokens In':<20} {'Tokens Out':<20} {'Total':<20}")
+        print(f"{'':<12} {'':<8} {'(total/avg/min/max)':<20} {'(total/avg/min/max)':<20} {'(total/avg/min/max)':<20}")
+        print("-"*60)
+        
+        for agent in ["manager", "coder", "tester", "reviewer"]:
+            token_stats = self.get_agent_token_stats(agent)
+            if token_stats:
+                tokens_in = token_stats.get("tokens_in", {})
+                tokens_out = token_stats.get("tokens_out", {})
+                total_tokens = token_stats.get("total_tokens", {})
+                
+                if tokens_in.get("count", 0) > 0:
+                    in_str = f"{tokens_in['total']:,}/{tokens_in['avg']:.0f}/{tokens_in['min']:,}/{tokens_in['max']:,}"
+                else:
+                    in_str = "N/A"
+                
+                if tokens_out.get("count", 0) > 0:
+                    out_str = f"{tokens_out['total']:,}/{tokens_out['avg']:.0f}/{tokens_out['min']:,}/{tokens_out['max']:,}"
+                else:
+                    out_str = "N/A"
+                
+                if total_tokens.get("count", 0) > 0:
+                    total_str = f"{total_tokens['total']:,}/{total_tokens['avg']:.0f}/{total_tokens['min']:,}/{total_tokens['max']:,}"
+                else:
+                    total_str = "N/A"
+                
+                calls = len([t for t in self.timings if t.agent == agent])
+                print(f"{agent:<12} {calls:<8} {in_str:<20} {out_str:<20} {total_str:<20}")
+        
         print("\n⏱️  PER-ITERATION BREAKDOWN:")
         print("-"*60)
         max_iter = max(t.iteration for t in self.timings) if self.timings else 0
@@ -86,11 +164,17 @@ class RunStatistics:
                 {
                     "agent": t.agent,
                     "iteration": t.iteration,
-                    "duration": t.duration
+                    "duration": t.duration,
+                    "tokens_in": t.tokens_in,
+                    "tokens_out": t.tokens_out
                 } for t in self.timings
             ],
             "agent_stats": {
                 agent: self.get_agent_stats(agent) 
+                for agent in ["manager", "coder", "tester", "reviewer"]
+            },
+            "agent_token_stats": {
+                agent: self.get_agent_token_stats(agent)
                 for agent in ["manager", "coder", "tester", "reviewer"]
             }
         }

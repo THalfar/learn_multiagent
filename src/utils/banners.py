@@ -104,6 +104,7 @@ def print_environment_switch_bombardment(
     
     # Agent timing stats for current environment
     agent_stats = {}
+    agent_token_stats = {}
     for agent in ["manager", "coder", "tester", "reviewer"]:
         agent_timings = [t for t in stats.timings if t.agent == agent]
         if agent_timings:
@@ -113,6 +114,10 @@ def print_environment_switch_bombardment(
                 "total": sum(durations),
                 "avg": sum(durations) / len(durations),
             }
+            # Get token statistics for this agent
+            token_stats = stats.get_agent_token_stats(agent)
+            if token_stats:
+                agent_token_stats[agent] = token_stats
     
     # Environment progression status
     total_envs = len(env_progression) if env_progression else 1
@@ -160,12 +165,14 @@ def print_environment_switch_bombardment(
     )
     stats_columns.append(progress_stats)
     
-    # Agent performance
-    agent_perf = "\n".join([
-        f"{agent.capitalize()}: {agent_stats[agent]['calls']} calls, {agent_stats[agent]['total']:.1f}s total"
-        for agent in ["manager", "coder", "tester", "reviewer"]
-        if agent in agent_stats
-    ])
+    # Agent performance with timing
+    agent_perf_lines = []
+    for agent in ["manager", "coder", "tester", "reviewer"]:
+        if agent in agent_stats:
+            agent_perf_lines.append(
+                f"{agent.capitalize()}: {agent_stats[agent]['calls']} calls, {agent_stats[agent]['total']:.1f}s total"
+            )
+    agent_perf = "\n".join(agent_perf_lines) if agent_perf_lines else "No agent data"
     agent_stats_panel = Panel(
         f"[bold yellow]AGENT PERFORMANCE[/bold yellow]\n\n{agent_perf}",
         border_style="yellow"
@@ -174,6 +181,56 @@ def print_environment_switch_bombardment(
     
     console.print(Columns(stats_columns, equal=True, expand=True))
     print()
+    
+    # Token statistics table - comprehensive breakdown
+    if agent_token_stats:
+        token_table = Table(show_header=True, header_style="bold cyan", box=None)
+        token_table.add_column("Agent", style="cyan", width=12)
+        token_table.add_column("Calls", style="dim", width=6, justify="right")
+        token_table.add_column("Tokens In", style="yellow", width=25)
+        token_table.add_column("Tokens Out", style="green", width=25)
+        token_table.add_column("Total", style="magenta", width=25)
+        
+        for agent in ["manager", "coder", "tester", "reviewer"]:
+            if agent in agent_token_stats:
+                stats = agent_token_stats[agent]
+                tokens_in = stats.get("tokens_in", {})
+                tokens_out = stats.get("tokens_out", {})
+                total_tokens = stats.get("total_tokens", {})
+                
+                if tokens_in.get("count", 0) > 0:
+                    in_str = f"Total: {tokens_in['total']:,}\nAvg: {tokens_in['avg']:.0f} | Med: {tokens_in['median']:.0f}\nMin: {tokens_in['min']:,} | Max: {tokens_in['max']:,}"
+                else:
+                    in_str = "N/A"
+                
+                if tokens_out.get("count", 0) > 0:
+                    out_str = f"Total: {tokens_out['total']:,}\nAvg: {tokens_out['avg']:.0f} | Med: {tokens_out['median']:.0f}\nMin: {tokens_out['min']:,} | Max: {tokens_out['max']:,}"
+                else:
+                    out_str = "N/A"
+                
+                if total_tokens.get("count", 0) > 0:
+                    total_str = f"Total: {total_tokens['total']:,}\nAvg: {total_tokens['avg']:.0f} | Med: {total_tokens['median']:.0f}\nMin: {total_tokens['min']:,} | Max: {total_tokens['max']:,}"
+                else:
+                    total_str = "N/A"
+                
+                calls = agent_stats[agent]["calls"] if agent in agent_stats else 0
+                
+                token_table.add_row(
+                    agent.capitalize(),
+                    str(calls),
+                    in_str,
+                    out_str,
+                    total_str
+                )
+        
+        if token_table.rows:
+            console.print(Panel(
+                token_table,
+                title="[bold cyan]🔢 TOKEN STATISTICS BY AGENT[/bold cyan]",
+                border_style="cyan",
+                padding=(1, 1)
+            ))
+            print()
     
     # Environment progression timeline
     if env_progression:
@@ -213,7 +270,7 @@ def print_environment_switch_bombardment(
         print()
 
 
-def print_manager_report(report: str):
+def print_manager_report(report: str, timing=None):
     """Print manager's report to leadership in a fancy format"""
     console = Console()
     
@@ -229,10 +286,16 @@ def print_manager_report(report: str):
         padding=(1, 2)
     ))
     
+    # Print token statistics if available
+    if timing and (timing.tokens_in > 0 or timing.tokens_out > 0):
+        total_tokens = timing.tokens_in + timing.tokens_out
+        tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
+        console.print(f"[dim blue]Report stats: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {timing.duration:.1f}s | {tokens_per_sec:.0f} tok/s[/dim blue]")
+    
     print("\n" + "─" * 70 + "\n")
 
 
-def print_reviewer_cynical_report(report: str):
+def print_reviewer_cynical_report(report: str, timing=None):
     """Print reviewer's cynical, sarcastic report in a fancy format"""
     console = Console()
     
@@ -248,5 +311,11 @@ def print_reviewer_cynical_report(report: str):
         padding=(1, 2),
         subtitle="[dim]A superior intellect's take on your 'achievements'[/dim]"
     ))
+    
+    # Print token statistics if available
+    if timing and (timing.tokens_in > 0 or timing.tokens_out > 0):
+        total_tokens = timing.tokens_in + timing.tokens_out
+        tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
+        console.print(f"[dim magenta]Report stats: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {timing.duration:.1f}s | {tokens_per_sec:.0f} tok/s[/dim magenta]")
     
     print("\n" + "─" * 70 + "\n")

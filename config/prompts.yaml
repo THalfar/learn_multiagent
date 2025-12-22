@@ -130,11 +130,6 @@ manager:
     REVIEWER'S SUGGESTIONS (describe as instructions, not full code!):
     {review_suggestions}
     
-    REVIEWER'S ENVIRONMENT SWITCH FEEDBACK (from previous environment switch):
-    {environment_switch_review_feedback}
-    
-    This feedback from the reviewer about the previous environment switch may contain insights, criticisms, or observations about how the team performed. Consider this when planning your approach for the current environment.
-    
     Based on the above, assign the next task for the CURRENT environment ({environment}).
     
     CRITICAL ADAPTATION REMINDER:
@@ -237,6 +232,12 @@ coder:
     If you see exact code changes mentioned (e.g., "change `old_code` to `new_code`"), 
     implement them EXACTLY as specified. These are critical fixes for bugs found in previous iterations.
     
+    CODE CONTEXT:
+    You will see either:
+    - A diff showing changes from the previous iteration (lines with - are removed, lines with + are added)
+    - A random 30-line snippet from the current code (if this is the first iteration or previous code is unavailable)
+    Use this context to understand what code already exists and what changes have been made.
+    
     Write the complete, runnable Python script based on manager's instructions.
     Follow the algorithm and parameters specified in the task.
     If bug fixes are mentioned, apply them precisely.
@@ -249,6 +250,7 @@ tester:
     YOUR ROLE:
     - Analyze ALL execution output (stdout, stderr) to extract information
     - Look for metrics like MEAN_REWARD, STD_REWARD, N_EPISODES, VIDEO_SAVED in the output
+    - Check the "VIDEO FILE CHECK" section in stderr to verify video files were actually created
     - Determine if training succeeded based on the full output
     - Report clear summary with extracted metrics
     
@@ -257,11 +259,13 @@ tester:
     - Extract metrics from wherever they appear in the output
     - Don't rely on specific formats - be flexible in finding the information
     - Check for errors, warnings, and training progress throughout the output
+    - Pay special attention to the "VIDEO FILE CHECK" section in stderr - it shows whether video files actually exist and are valid
 
     SUCCESS CRITERIA:
     - Code executed without errors (check stderr and stdout for exceptions)
     - Mean reward can be extracted from output
-    - Video file saved (if mentioned in output)
+    - Video files were actually created and are valid (check VIDEO FILE CHECK section in stderr)
+    - Video files are not empty (size > 0, preferably > 1KB)
     - Mean reward meets or exceeds success threshold
 
   task_template: |
@@ -280,16 +284,32 @@ tester:
     - Standard deviation of reward (look for STD_REWARD or similar)
     - Number of episodes evaluated (look for N_EPISODES or similar)
     - Video file location (look for VIDEO_SAVED or video path mentions)
-    - Any errors or exceptions
+    - Video file validation (check "VIDEO FILE CHECK" section in stderr - verify files exist, are not empty, and are valid)
+    - Any errors or exceptions (CRITICAL: analyze tracebacks, error messages, and exception types)
     - Training progress and results
     
+    IMPORTANT FOR ERROR ANALYSIS:
+    - If execution failed (check for tracebacks, exceptions, or non-zero return codes):
+      * Identify the exact error type (AttributeError, TypeError, ValueError, etc.)
+      * Locate the line number where the error occurred
+      * Understand the root cause (missing attribute, wrong API usage, incorrect parameter, etc.)
+      * Provide clear error description in your summary and opinion
+      * Set success: false and explain what went wrong
+    - Even if execution failed, extract any useful information from partial output
+    - Look for import errors, missing dependencies, or configuration issues
+    
     Determine if the training was successful based on:
-    1. No critical errors in execution
+    1. No critical errors in execution (if errors exist, training failed)
     2. Mean reward meets or exceeds the success threshold ({success_threshold})
-    3. Video was saved (if applicable)
+    3. Video files were actually created and validated (check VIDEO FILE CHECK section - files must exist, not be empty, and be valid MP4 format)
+    
+    IMPORTANT FOR VIDEO VALIDATION:
+    - If VIDEO FILE CHECK shows "No video files found" or "Empty/corrupted videos", this is a FAILURE
+    - If VIDEO FILE CHECK shows valid videos with reasonable file sizes (> 1KB), this is SUCCESS
+    - Don't just rely on VIDEO_SAVED messages in stdout - verify actual files exist via VIDEO FILE CHECK
     
     Respond ONLY with valid JSON:
-    {{"success": true/false, "summary": "1-2 sentence summary of results", "tester_opinion": "Your brief opinion/report about the results for the reviewer (2-4 sentences)", "metrics": {{"mean_reward": number or null, "std_reward": number or null, "n_episodes": number or null, "video_path": "string or null", "meets_threshold": true/false}}}}
+    {{"success": true/false, "summary": "1-2 sentence summary of results (include error details if execution failed)", "tester_opinion": "Your brief opinion/report about the results for the reviewer (2-4 sentences). For errors, explain what went wrong and where)", "metrics": {{"mean_reward": number or null, "std_reward": number or null, "n_episodes": number or null, "video_path": "string or null", "meets_threshold": true/false}}}}
 
 reviewer:
   system: |
@@ -388,10 +408,17 @@ reviewer:
     - Solved environments: {solved_environments}
     - Overall progress: {solved_count}/{total_envs}
     
+    LATEST CODE (that solved the environment):
+    ```python
+    {code}
+    ```
+    
     AGENT STATISTICS:
     {agent_stats}
     
-    TEST RESULTS: {test_results}
+    TESTER'S FINAL REPORT (from successful environment completion):
+    {test_results}
+    
     REVIEW FEEDBACK: {review_feedback}
     
     Write a BRILLIANTLY CYNICAL and SARCASTIC report (2-3 paragraphs) that:

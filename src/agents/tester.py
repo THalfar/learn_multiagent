@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+from pathlib import Path
 from .base import BaseAgent
 from rich import print
 
@@ -12,6 +13,103 @@ def is_safe_code(code: str) -> bool:
                  "subprocess", "import os\\nos.",
                  "../", "C:\\\\Windows", "C:\\\\Users"]
     return not any(d in code for d in dangerous)
+
+def check_video_files(video_dir: str) -> dict:
+    """
+    Check if video files exist in the video directory and validate them.
+    Returns a dict with video file information.
+    """
+    video_info = {
+        "video_dir": video_dir,
+        "exists": False,
+        "video_files": [],
+        "total_size": 0,
+        "valid_videos": 0,
+        "empty_videos": 0,
+        "error": None
+    }
+    
+    try:
+        video_path = Path(video_dir)
+        if not video_path.exists():
+            video_info["error"] = f"Video directory does not exist: {video_dir}"
+            return video_info
+        
+        video_info["exists"] = True
+        
+        # Find all video files (common formats)
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        video_files = []
+        for ext in video_extensions:
+            video_files.extend(list(video_path.glob(f'*{ext}')))
+        
+        # Also check for rl-video files (common naming pattern, but exclude .json and .meta files)
+        rl_video_files = list(video_path.glob('rl-video-*'))
+        # Filter out .json, .meta.json and other non-video files
+        rl_video_files = [f for f in rl_video_files if f.suffix in video_extensions]
+        video_files.extend(rl_video_files)
+        
+        # Remove duplicates and filter to actual video files only
+        video_files = list(set([f for f in video_files if f.suffix in video_extensions]))
+        
+        if not video_files:
+            video_info["error"] = f"No video files found in {video_dir}"
+            return video_info
+        
+        # Check each video file
+        for video_file in sorted(video_files):
+            file_info = {
+                "path": str(video_file),
+                "name": video_file.name,
+                "size": 0,
+                "size_mb": 0.0,
+                "is_valid": False,
+                "is_empty": False
+            }
+            
+            try:
+                if video_file.exists():
+                    file_size = video_file.stat().st_size
+                    file_info["size"] = file_size
+                    file_info["size_mb"] = file_size / (1024 * 1024)
+                    
+                    # Check if file is empty (likely not a real video)
+                    if file_size == 0:
+                        file_info["is_empty"] = True
+                        video_info["empty_videos"] += 1
+                    elif file_size < 1024:  # Less than 1KB is suspicious
+                        file_info["is_empty"] = True
+                        video_info["empty_videos"] += 1
+                    else:
+                        # Check if it's a valid MP4 by reading file header
+                        # MP4 files start with specific bytes (ftyp box)
+                        try:
+                            with open(video_file, 'rb') as f:
+                                header = f.read(12)
+                                # MP4 files have 'ftyp' at offset 4
+                                if len(header) >= 8 and header[4:8] == b'ftyp':
+                                    file_info["is_valid"] = True
+                                    video_info["valid_videos"] += 1
+                                elif video_file.suffix == '.mp4':
+                                    # If it's .mp4 but doesn't have proper header, might be corrupted
+                                    file_info["is_valid"] = False
+                                else:
+                                    # For other formats, assume valid if size is reasonable
+                                    file_info["is_valid"] = True
+                                    video_info["valid_videos"] += 1
+                        except Exception as e:
+                            # Can't read file, mark as invalid
+                            file_info["error"] = str(e)
+                    video_info["total_size"] += file_size
+            except Exception as e:
+                file_info["error"] = str(e)
+            
+            video_info["video_files"].append(file_info)
+        
+    except Exception as e:
+        video_info["error"] = f"Error checking video directory: {str(e)}"
+    
+    return video_info
 
 class Tester(BaseAgent):
     def __init__(self, config):
@@ -80,39 +178,86 @@ class Tester(BaseAgent):
             execution_end = time.time()
             execution_duration = execution_end - execution_start
 
-            if result.returncode != 0:
-                error = result.stderr[:500] or result.stdout[:500]
-                print("\n" + "─" * 70)
-                print("[bold yellow]TESTER → REVIEWER[/bold yellow]")
-                print("─" * 70)
-                print(f"[bold red]Execution failed (return code: {result.returncode})[/bold red]")
-                print(f"[red]{error}[/red]")
-                print("─" * 70 + "\n")
-                
-                # Log to conversation file
-                logger = state.get("conversation_logger")
-                if logger:
-                    logger.log_tester(
-                        iteration=state.get("iteration", 0),
-                        test_results=f"Exec failed (rc {result.returncode}): {error}",
-                        execution_stdout=result.stdout,
-                        execution_stderr=result.stderr,
-                        execution_time=execution_duration
-                    )
-                
-                return {
-                    "test_results": f"Exec failed (rc {result.returncode}): {error}",
-                    "execution_stdout": result.stdout,
-                    "execution_stderr": result.stderr
-                }
-
             stdout = result.stdout
             stderr = result.stderr
             
+            # Check for video files after execution
+            video_check = check_video_files(video_dir)
+            
+            # Add video check information to output
+            video_check_output = []
+            video_check_output.append("\n" + "─" * 70)
+            video_check_output.append("[bold cyan]VIDEO FILE CHECK[/bold cyan]")
+            video_check_output.append("─" * 70)
+            
+            if video_check["error"]:
+                video_check_output.append(f"[red]Error: {video_check['error']}[/red]")
+            elif not video_check["exists"]:
+                video_check_output.append(f"[red]Video directory does not exist: {video_dir}[/red]")
+            elif not video_check["video_files"]:
+                video_check_output.append(f"[yellow]No video files found in {video_dir}[/yellow]")
+            else:
+                video_check_output.append(f"[green]Found {len(video_check['video_files'])} video file(s)[/green]")
+                video_check_output.append(f"[dim]Total size: {video_check['total_size'] / (1024*1024):.2f} MB[/dim]")
+                video_check_output.append(f"[green]Valid videos: {video_check['valid_videos']}[/green]")
+                if video_check["empty_videos"] > 0:
+                    video_check_output.append(f"[red]Empty/corrupted videos: {video_check['empty_videos']}[/red]")
+                
+                # Show details of first few videos
+                for i, vf in enumerate(video_check["video_files"][:5]):
+                    status = "✓" if vf["is_valid"] and not vf["is_empty"] else "✗"
+                    color = "green" if vf["is_valid"] and not vf["is_empty"] else "red"
+                    video_check_output.append(f"[{color}]{status} {vf['name']}: {vf['size_mb']:.2f} MB[/{color}]")
+                
+                if len(video_check["video_files"]) > 5:
+                    video_check_output.append(f"[dim]... and {len(video_check['video_files']) - 5} more[/dim]")
+            
+            video_check_output.append("─" * 70 + "\n")
+            
+            # Print video check results
+            for line in video_check_output:
+                print(line)
+            
+            # Add video check info to stderr for LLM analysis
+            video_info_text = "\n".join([
+                "=== VIDEO FILE CHECK ===",
+                f"Video directory: {video_dir}",
+                f"Directory exists: {video_check['exists']}",
+                f"Video files found: {len(video_check['video_files'])}",
+                f"Valid videos: {video_check['valid_videos']}",
+                f"Empty/corrupted: {video_check['empty_videos']}",
+                f"Total size: {video_check['total_size'] / (1024*1024):.2f} MB" if video_check['total_size'] > 0 else "Total size: 0 MB",
+            ])
+            if video_check["error"]:
+                video_info_text += f"\nError: {video_check['error']}"
+            if video_check["video_files"]:
+                video_info_text += "\nVideo files:"
+                for vf in video_check["video_files"][:10]:  # Limit to first 10
+                    status = "VALID" if vf["is_valid"] and not vf["is_empty"] else "INVALID/EMPTY"
+                    video_info_text += f"\n  - {vf['name']}: {vf['size_mb']:.2f} MB ({status})"
+            video_info_text += "\n"
+            
+            # Append video check info to stderr so LLM can see it
+            stderr = stderr + "\n" + video_info_text if stderr else video_info_text
+            
+            # Continue with analysis even if execution failed
+            execution_failed = result.returncode != 0
+            
             # Show execution statistics
-            print("\n" + "─" * 70)
-            print("[bold yellow]EXECUTION COMPLETE[/bold yellow]")
-            print("─" * 70)
+            if execution_failed:
+                print("\n" + "─" * 70)
+                print("[bold red]EXECUTION FAILED[/bold red]")
+                print("─" * 70)
+                print(f"[red]Return code: {result.returncode}[/red]")
+                # Show brief error preview
+                error_preview = (result.stderr[:300] or result.stdout[:300]).strip()
+                if error_preview:
+                    print(f"[dim]Error preview: {error_preview}...[/dim]")
+            else:
+                print("\n" + "─" * 70)
+                print("[bold yellow]EXECUTION COMPLETE[/bold yellow]")
+                print("─" * 70)
+            
             minutes = int(execution_duration // 60)
             seconds = int(execution_duration % 60)
             if minutes > 0:
@@ -133,7 +278,7 @@ class Tester(BaseAgent):
             
             print("─" * 70 + "\n")
 
-            # LLM tester analysis - let LLM analyze all outputs
+            # LLM tester analysis - let LLM analyze all outputs (including errors)
             print("[dim]Analyzing execution results...[/dim]\n")
             
             # Get success threshold from current environment (execution_timeout already retrieved earlier)
@@ -143,11 +288,18 @@ class Tester(BaseAgent):
             success_threshold = current_env.success_threshold if current_env else (env_progression[0].success_threshold if env_progression else 0)
             
             prompt_dict = self.config.get_prompt("tester")
-            task_template = prompt_dict["task_template"].format(
-                execution_stdout=stdout,
-                execution_stderr=stderr,
-                success_threshold=success_threshold
-            )
+            # Format template - handle optional return_code parameter
+            template_vars = {
+                "execution_stdout": stdout,
+                "execution_stderr": stderr,
+                "success_threshold": success_threshold
+            }
+            # Only add return_code if the template expects it
+            try:
+                task_template = prompt_dict["task_template"].format(**template_vars)
+            except KeyError:
+                # Template doesn't have return_code placeholder, that's fine
+                task_template = prompt_dict["task_template"].format(**template_vars)
             full_prompt = prompt_dict["system"] + "\\n\\n" + task_template
 
             response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))

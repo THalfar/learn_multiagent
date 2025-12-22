@@ -251,16 +251,39 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             for i, suggestion in enumerate(suggestions, 1):
                 print(f"[dim]  {i}. {suggestion}[/dim]")
         
-        print("─" * 70 + "\n")
-
-        # Live per-iteration timing
+        # Get reviewer's LLM call timing
         iteration = state.get("iteration", 0)
         stats_obj = state["stats"]
         iter_stats = stats_obj.get_iteration_stats(iteration)
+        reviewer_time = iter_stats["agents"].get("reviewer", 0)
+        
+        if reviewer_time > 0:
+            print(f"[dim]⏱️  Reviewer analysis time: {reviewer_time:.1f}s[/dim]")
+        
+        print("─" * 70 + "\n")
+
+        # Live per-iteration timing and token stats
+        iter_stats = stats_obj.get_iteration_stats(iteration)
         total_time = iter_stats["total_time"]
         agent_times = iter_stats["agents"]
+        agent_tokens = iter_stats.get("agent_tokens", {})
+        
         print(f"\n⏱️  Iteration {iteration} complete in {total_time:.1f}s")
         print(f"   Manager: {agent_times.get('manager', 0):.1f}s | Coder: {agent_times.get('coder', 0):.1f}s | Tester: {agent_times.get('tester', 0):.1f}s | Reviewer: {agent_times.get('reviewer', 0):.1f}s")
+        
+        # Token statistics for this iteration
+        if agent_tokens:
+            token_lines = []
+            for agent in ["manager", "coder", "tester", "reviewer"]:
+                if agent in agent_tokens:
+                    tokens = agent_tokens[agent]
+                    tokens_in = tokens.get("tokens_in", 0)
+                    tokens_out = tokens.get("tokens_out", 0)
+                    if tokens_in > 0 or tokens_out > 0:
+                        token_lines.append(f"{agent.capitalize()}: {tokens_in:,}→{tokens_out:,}")
+            
+            if token_lines:
+                print(f"   🔢 Tokens: {' | '.join(token_lines)}")
 
         # Store suggestions separately for Manager to relay to Coder
         suggestions_text = "\n".join(suggestions) if suggestions else "No specific suggestions"
@@ -291,6 +314,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         stats,
         tasks: list,
         iterations: int,
+        code: str = "",
         test_results: str = "",
         review_feedback: str = ""
     ):
@@ -318,20 +342,52 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             Manager's report: {manager_report}
             Be witty and condescending like Shodan."""
         
+        # Include code in the prompt for reviewer to analyze
+        code_summary = code[:1000] if code else "No code available"
+        
         report_prompt = report_template.format(
             current_env_name=current_env_name,
             next_env_name=next_env_name,
             manager_report=manager_report,
+            code=code_summary,
             iterations=iterations,
             tasks_count=len(tasks) if tasks else 0,
             solved_environments=", ".join(solved_environments) if solved_environments else "None",
             solved_count=len(solved_environments),
             total_envs=len(env_progression) if env_progression else 1,
             agent_stats=agent_stats_text,
-            test_results=test_results[:500] if test_results else "N/A",
+            test_results=test_results[:2000] if test_results else "N/A",  # Longer test results for context
             review_feedback=review_feedback[:500] if review_feedback else "N/A"
         )
         
         # Call LLM to generate report
         response = self.call_llm_timed(report_prompt, stats, iterations)
-        return response.content.strip()
+        
+        # Get timing for this report generation
+        agent_timings = [t for t in stats.timings if t.agent == self.agent_name and t.iteration == iterations]
+        report_timing = agent_timings[-1] if agent_timings else None
+        
+        # Extract thinking content separately (like manager does)
+        import re
+        report_content = response.content.strip()
+        
+        # Extract thinking tags
+        thinking_content = None
+        think_patterns = [
+            (r'<think[^>]*>(.*?)</think[^>]*>', re.DOTALL | re.IGNORECASE),
+            (r'<thinking[^>]*>(.*?)</thinking[^>]*>', re.DOTALL | re.IGNORECASE),
+        ]
+        
+        for pattern, flags in think_patterns:
+            match = re.search(pattern, report_content, flags)
+            if match:
+                thinking_content = match.group(1).strip()
+                break
+        
+        # Remove thinking tags from report (don't show thinking process in the report itself)
+        report_content = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', report_content, flags=re.DOTALL | re.IGNORECASE)
+        report_content = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', report_content, flags=re.DOTALL | re.IGNORECASE)
+        # Clean up extra whitespace
+        report_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', report_content)
+        
+        return report_content.strip(), thinking_content, report_timing

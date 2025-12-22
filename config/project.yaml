@@ -36,12 +36,6 @@ environment:
   name: "CartPole-v1"
   max_episode_steps: 500
 
-# Training settings (reduced for faster iteration)
-training:
-  total_timesteps: 100000
-  eval_frequency: 5000
-  n_eval_episodes: 5
-
 # Video recording
 video:
   enabled: true
@@ -50,7 +44,7 @@ video:
 
 # Agent loop settings (reduced for faster iteration)
 agents:
-  max_iterations: 50
+  max_iterations: 420
   show_thinking: false  # Show agent thinking process (reasoning model output)
 
 # LLM settings

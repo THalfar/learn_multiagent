@@ -62,6 +62,10 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
         # Call LLM to generate report
         response = self.call_llm_timed(report_prompt, stats, state.get("iteration", 0))
         
+        # Get timing for this report generation
+        agent_timings = [t for t in stats.timings if t.agent == self.agent_name and t.iteration == state.get("iteration", 0)]
+        report_timing = agent_timings[-1] if agent_timings else None
+        
         # Extract thinking content separately
         import re
         report_content = response.content.strip()
@@ -85,7 +89,7 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
         # Clean up extra whitespace
         report_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', report_content)
         
-        return report_content.strip(), thinking_content
+        return report_content.strip(), thinking_content, report_timing
 
     def __call__(self, state: dict) -> dict:
         current_iteration = state.get("iteration", 0)
@@ -95,34 +99,6 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
         current_env_index = state.get("current_env_index", 0)
         solved_environments = state.get("solved_environments", [])
         env_progression = self.config.environment_progression
-        
-        # Check if environment has actually switched and print cynical report if it has
-        env_switch_review = state.get("environment_switch_review_feedback", "")
-        should_clear_env_switch_review = False
-        if env_switch_review and env_progression:
-            # Verify environment has actually changed by checking state vs config
-            # After a switch, the state's current_env_index should point to the new environment
-            # and the config should match that environment
-            if current_env_index < len(env_progression):
-                current_env_from_state = env_progression[current_env_index]
-                current_env_from_config = self.config.project.environment.name
-                
-                # Environment has switched if state and config both point to the same (new) environment
-                # This confirms the switch was successful
-                if current_env_from_state.name == current_env_from_config:
-                    # Environment has actually switched - print the cynical report now
-                    print_reviewer_cynical_report(env_switch_review)
-                    # Mark for clearing so it doesn't print again
-                    should_clear_env_switch_review = True
-                else:
-                    # Environment switch may have failed - log warning but don't print report
-                    print(f"[bold yellow]⚠️  Warning: Environment switch may have failed. State env: {current_env_from_state.name}, Config env: {current_env_from_config}[/bold yellow]")
-                    # Clear the feedback anyway to avoid infinite loop
-                    should_clear_env_switch_review = True
-            else:
-                # Invalid index - clear feedback
-                print(f"[bold red]ERROR: Invalid current_env_index {current_env_index} (max: {len(env_progression) - 1})[/bold red]")
-                should_clear_env_switch_review = True
         
         # If current environment was just solved, advance to next
         if state.get("approved", False) and env_progression:
@@ -172,7 +148,7 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                     )
                     
                     # Generate manager report to leadership
-                    manager_report, thinking_content = self._generate_environment_switch_report(
+                    manager_report, thinking_content, manager_timing = self._generate_environment_switch_report(
                         current_env=current_env,
                         next_env=next_env,
                         solved_environments=solved_environments,
@@ -188,12 +164,13 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                         self.print_thinking(f"<think>{thinking_content}</think>")
                         print("─" * 70 + "\n")
                     
-                    print_manager_report(manager_report)
+                    print_manager_report(manager_report, manager_timing)
                     
-                    # Generate reviewer's cynical report (but don't print yet - wait until env actually switched)
+                    # Generate and print reviewer's cynical report immediately (special phase when env switches)
+                    # Reviewer gets manager's report AND the latest code
                     from .reviewer import Reviewer
                     reviewer = Reviewer(self.config)
-                    reviewer_report = reviewer.generate_environment_switch_report(
+                    reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
                         current_env_name=current_env.name,
                         next_env_name=next_env.name,
                         manager_report=manager_report,
@@ -202,11 +179,21 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                         stats=state["stats"],
                         tasks=state.get("tasks", []),
                         iterations=state.get("iteration", 0),
+                        code=state.get("code", ""),  # Include latest code
                         test_results=state.get("test_results", ""),
                         review_feedback=state.get("review_feedback", "")
                     )
-                    # NOTE: Don't print cynical report here - it will be printed in next manager call
-                    # after verifying the environment has actually changed
+                    
+                    # Show reviewer's thinking separately if available (before the report)
+                    if reviewer_thinking:
+                        print("\n" + "─" * 70)
+                        print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
+                        print("─" * 70)
+                        self.print_thinking(f"<think>{reviewer_thinking}</think>")
+                        print("─" * 70 + "\n")
+                    
+                    # Print reviewer's cynical report immediately
+                    print_reviewer_cynical_report(reviewer_report, reviewer_timing)
                     
                     # Log environment switch
                     logger = state.get("conversation_logger")
@@ -215,7 +202,7 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                             current_env=current_env.name,
                             next_env=next_env.name,
                             manager_report=manager_report,
-                            reviewer_report=reviewer_report
+                            reviewer_report=reviewer_report  # Just the report text for logging
                         )
                     
                     # Additional validation: verify next_env_index is still valid (double-check)
@@ -244,7 +231,7 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                         print(f"[bold red]ERROR: Failed to update config: {e}[/bold red]")
                         return {"current_task": f"ERROR: Config update failed: {e}"}
                     
-                    # Reset state for new environment, but keep reviewer's switch feedback
+                    # Reset state for new environment (don't save reviewer's switch report - it's already printed)
                     return {
                         "current_env_index": next_env_index,
                         "solved_environments": solved_environments,
@@ -254,7 +241,6 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                         "test_results": "",
                         "review_feedback": "",
                         "review_suggestions": "",
-                        "environment_switch_review_feedback": reviewer_report,  # Save reviewer's feedback for next call
                         "current_task": "",
                         "iteration": 1,  # LangGraph adds this automatically due to operator.add
                     }
@@ -268,15 +254,6 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
         # Show clear communication from reviewer
         review_feedback = state.get("review_feedback", "")
         review_suggestions = state.get("review_suggestions", "")
-        # Only show env_switch_review if we haven't already printed it as cynical report
-        env_switch_review = state.get("environment_switch_review_feedback", "") if not should_clear_env_switch_review else ""
-        
-        if env_switch_review:
-            print("\n" + "─" * 70)
-            print("[bold yellow]MANAGER ← REVIEWER (Environment Switch Feedback)[/bold yellow]")
-            print("─" * 70)
-            print(f"[dim italic]{env_switch_review}[/dim italic]")
-            print("─" * 70 + "\n")
         
         if review_feedback:
             print("\n" + "─" * 70)
@@ -291,10 +268,9 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
             
             print("─" * 70 + "\n")
         else:
-            if not env_switch_review:  # Only show this if no feedback at all
-                print("\n" + "─" * 70)
-                print("[bold blue]MANAGER: Starting first iteration[/bold blue]")
-                print("─" * 70 + "\n")
+            print("\n" + "─" * 70)
+            print("[bold blue]MANAGER: Starting first iteration[/bold blue]")
+            print("─" * 70 + "\n")
         
         print("[bold blue]Planning next task...[/bold blue]")
         prompt_dict = self.config.get_prompt("manager")
@@ -321,7 +297,6 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
             test_results=state.get("test_results", ""),
             review_feedback=review_feedback,
             review_suggestions=review_suggestions,
-            environment_switch_review_feedback=env_switch_review or "",  # Add reviewer's switch feedback
             iteration=expected_iteration,
             max_iterations=self.config.agents.max_iterations,
             environment=current_env_name,
@@ -537,7 +512,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 )
                 
                 # Generate manager report to leadership
-                manager_report, thinking_content = self._generate_environment_switch_report(
+                manager_report, thinking_content, manager_timing = self._generate_environment_switch_report(
                     current_env=current_env,
                     next_env=next_env,
                     solved_environments=solved_environments,
@@ -553,12 +528,13 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     self.print_thinking(f"<think>{thinking_content}</think>")
                     print("─" * 70 + "\n")
                 
-                print_manager_report(manager_report)
+                print_manager_report(manager_report, manager_timing)
                 
-                # Generate reviewer's cynical report (but don't print yet - wait until env actually switched)
+                # Generate and print reviewer's cynical report immediately (special phase when env switches)
+                # Reviewer gets manager's report AND the latest code
                 from .reviewer import Reviewer
                 reviewer = Reviewer(self.config)
-                reviewer_report = reviewer.generate_environment_switch_report(
+                reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
                     current_env_name=current_env.name,
                     next_env_name=next_env.name,
                     manager_report=manager_report,
@@ -567,11 +543,22 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     stats=state["stats"],
                     tasks=state.get("tasks", []),
                     iterations=state.get("iteration", 0),
+                    code=state.get("code", ""),  # Include latest code
                     test_results=state.get("test_results", ""),
                     review_feedback=state.get("review_feedback", "")
                 )
-                # NOTE: Don't print cynical report here - it will be printed in next manager call
-                # after verifying the environment has actually changed
+                
+                # Show reviewer's thinking separately if available (before the report)
+                if reviewer_thinking:
+                    print("\n" + "─" * 70)
+                    print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
+                    print("─" * 70)
+                    self.print_thinking(f"<think>{reviewer_thinking}</think>")
+                    print("─" * 70 + "\n")
+                
+                # Print reviewer's cynical report immediately
+                from src.utils.banners import print_reviewer_cynical_report
+                print_reviewer_cynical_report(reviewer_report, reviewer_timing)
                 
                 # Log environment switch
                 logger = state.get("conversation_logger")
@@ -580,7 +567,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                         current_env=current_env.name,
                         next_env=next_env.name,
                         manager_report=manager_report,
-                        reviewer_report=reviewer_report
+                        reviewer_report=reviewer_report  # Just the report text for logging
                     )
                 
                 # Additional validation: verify next_env_index is still valid (double-check)
@@ -609,7 +596,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     print(f"[bold red]ERROR: Failed to update config: {e}[/bold red]")
                     return {"current_task": f"ERROR: Config update failed: {e}"}
                 
-                # Reset state for new environment, but keep reviewer's switch feedback
+                # Reset state for new environment (don't save reviewer's switch report - it's already printed)
                 return {
                     "current_env_index": next_env_index,
                     "solved_environments": solved_environments,
@@ -619,7 +606,6 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     "test_results": "",
                     "review_feedback": "",
                     "review_suggestions": "",
-                    "environment_switch_review_feedback": reviewer_report,  # Save reviewer's feedback for next call
                     "current_task": "",
                     "iteration": 1,  # LangGraph adds this automatically due to operator.add
                 }
@@ -690,9 +676,5 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "current_env_index": current_env_index,  # Preserve environment index
             "solved_environments": solved_environments,  # Preserve solved environments
         }
-        
-        # Clear environment switch review feedback if we already printed it
-        if should_clear_env_switch_review:
-            result["environment_switch_review_feedback"] = ""
         
         return result
