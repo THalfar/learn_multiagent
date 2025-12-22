@@ -6,6 +6,8 @@ class Coder(BaseAgent):
         super().__init__(config, "coder")
 
     def __call__(self, state: dict) -> dict:
+        from src.utils.banners import print_agent_transition
+        print_agent_transition("manager", "coder")
         self.logger.info(f"Coder generating code for '{state.get('current_task', 'unknown')}'")
         prompt_dict = self.config.get_prompt("coder")
         task_template = prompt_dict["task_template"].format(

@@ -49,7 +49,6 @@ class AgentLLMConfig(BaseModel):
 class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     environment: Environment
-    algorithm: Algorithm
     training: Training
     video: Video
     agents: Agents
@@ -84,9 +83,6 @@ class Config:
     def environment(self) -> Environment:
         return self.project.environment
 
-    @property
-    def algorithm(self) -> Algorithm:
-        return self.project.algorithm
 
     @property
     def training(self) -> Training:
@@ -115,6 +111,7 @@ class Config:
     @property
     def test_name(self) -> str:
         return self.project.test_name
+
     def get_prompt(self, agent_name: str) -> Dict[str, str]:
         """Get prompt dict for agent (e.g. 'manager')."""
         return self.prompts.get(agent_name, {})
@@ -129,7 +126,6 @@ def load_config(project_path: str = 'config/project.yaml',
 if __name__ == "__main__":
     config = load_config()
     print(f"Environment: {config.environment.name} (max steps: {config.environment.max_episode_steps})")
-    print(f"Algorithm: {config.algorithm.name}")
     print(f"LLM Model: {config.llm.model}")
     print(f"Max iterations: {config.agents.max_iterations}")
     mgr_prompt = config.get_prompt("manager")

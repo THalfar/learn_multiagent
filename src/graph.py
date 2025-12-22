@@ -18,6 +18,8 @@ def create_graph(config: Config):
         current_task: str
         code: str
         test_results: str
+        execution_stdout: str
+        execution_stderr: str
         review_feedback: str
         iteration: Annotated[int, operator.add]
         messages: Annotated[list, add_messages]

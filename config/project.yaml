@@ -17,8 +17,8 @@ video:
 
 # Agent loop settings
 agents:
-  max_iterations: 1
-  success_threshold: 200
+  max_iterations: 42
+  success_threshold: 230
 
 # LLM settings
 llm:
@@ -26,14 +26,14 @@ llm:
 
 # LLM routing - which agent uses which model
 agent_llm:
-  manager: "api"
+  manager:  "llama3.3:70b"
   reviewer: "api"
-  coder: "qwen2.5-coder:32b"
-  tester: "qwen2.5-coder:32b"
+  coder:  "qwen3-coder:30b"
+  tester: "qwen3-coder:30b"
 
 # Ollama settings (used for all non-api models)
 ollama:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"
 
-test_name: "hybrid_llm_lunarlander_eka"
+test_name: "hybrid_llm_lunarlander_yo"
