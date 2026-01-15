@@ -26,9 +26,13 @@ if __name__ == "__main__":
     if not env_progression:
         raise ValueError("No environment_progression defined in config!")
     
+    # Normalize video_dir to absolute path (fixes Windows path issues)
+    video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/videos"))
+    os.makedirs(video_dir, exist_ok=True)  # Create directory upfront
+    
     initial_state = {
         "run_id": run_id,
-        "video_dir": f"output/{run_id}/videos",
+        "video_dir": video_dir,
         "tasks": [],
         "current_task": "",
         "code": "",

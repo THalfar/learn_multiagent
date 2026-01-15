@@ -40,6 +40,8 @@ def check_video_files(video_dir: str) -> dict:
         # Find all video files (common formats)
         video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
         video_files = []
+        
+        # Check main directory
         for ext in video_extensions:
             video_files.extend(list(video_path.glob(f'*{ext}')))
         
@@ -48,6 +50,16 @@ def check_video_files(video_dir: str) -> dict:
         # Filter out .json, .meta.json and other non-video files
         rl_video_files = [f for f in rl_video_files if f.suffix in video_extensions]
         video_files.extend(rl_video_files)
+        
+        # Check iter_* subdirectories (created by coder for unique video storage)
+        for iter_dir in video_path.glob('iter_*'):
+            if iter_dir.is_dir():
+                for ext in video_extensions:
+                    video_files.extend(list(iter_dir.glob(f'*{ext}')))
+                # Check for rl-video files in subdirectories too
+                rl_video_files = list(iter_dir.glob('rl-video-*'))
+                rl_video_files = [f for f in rl_video_files if f.suffix in video_extensions]
+                video_files.extend(rl_video_files)
         
         # Remove duplicates and filter to actual video files only
         video_files = list(set([f for f in video_files if f.suffix in video_extensions]))
@@ -156,6 +168,11 @@ class Tester(BaseAgent):
         run_id = state["run_id"]
         code_dir = f"output/{run_id}/code"
         video_dir = state["video_dir"]
+        
+        # Normalize video_dir to absolute path (fixes Windows path issues)
+        import os
+        video_dir = os.path.abspath(os.path.normpath(video_dir))
+        
         os.makedirs(code_dir, exist_ok=True)
         os.makedirs(video_dir, exist_ok=True)
         code_path = f"{code_dir}/agent_code_iter_{state.get('iteration', 0)}.py"

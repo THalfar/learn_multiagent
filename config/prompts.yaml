@@ -97,6 +97,18 @@ manager:
     - Too slow? Reduce timesteps, try simpler approach first
     - Stuck? Try completely different algorithm
 
+    STUCK DETECTION:
+    - If the SAME TYPE of error repeats 2-3 iterations in a row (e.g., TypeError about parameters):
+      * DON'T just try different parameter names - that's guessing!
+      * Tell Coder to add introspection: `import inspect; print(inspect.signature(ClassName))`
+      * Or switch to completely different approach
+    - API parameter errors = Coder needs to CHECK documentation, not GUESS
+    - After 3 failed attempts at same issue: try alternative library or method entirely
+    - If RecordVideo errors repeat: CRITICAL - RecordVideo MUST wrap individual env BEFORE DummyVecEnv!
+      * Check that coder creates unique subdirectory per iteration
+      * Verify RecordVideo wraps single env, not DummyVecEnv
+      * Ensure render_mode='rgb_array' is in gym.make()
+
     COMPLETION:
     - When mean_reward >= {success_threshold} AND video saved for CURRENT environment: the system will automatically advance to next environment
     - ONLY respond with "DONE" when ALL environments in the progression have been solved
@@ -179,18 +191,69 @@ coder:
     - from stable_baselines3 import PPO, A2C, DQN, SAC
     - Use whichever the manager specifies
     - Different environments may need different algorithms (e.g., CarRacing may need different approach than CartPole)
+
+    LIBRARY TROUBLESHOOTING:
+    - If you get TypeError about unexpected arguments, DON'T GUESS different parameter names!
+    - Instead, use introspection to find correct parameters:
+      * Add: import inspect; print(inspect.signature(ClassName.__init__))
+      * Or: help(ClassName)
+    - Common API confusion to avoid:
+      * Monitor(filename=...) is for LOGGING, not video recording
+      * RecordVideo(video_folder=...) is for VIDEO recording
+      * These are DIFFERENT wrappers with DIFFERENT purposes!
+    
+    CORRECT VIDEO RECORDING SETUP (CRITICAL - FOLLOW EXACTLY):
+    CRITICAL: RecordVideo MUST wrap INDIVIDUAL environments, NOT DummyVecEnv!
+    
+    CORRECT ORDER FOR PARALLEL ENVIRONMENTS:
+    1. Create unique subdirectory per iteration to avoid overwriting: video_subdir = os.path.join(video_dir, f"iter_{iteration}")
+    2. Create the subdirectory: os.makedirs(video_subdir, exist_ok=True)
+    3. Wrap EACH individual environment with RecordVideo BEFORE vectorization:
+       def make_env():
+           env = gym.make('{environment}', render_mode='rgb_array')
+           env = RecordVideo(env, video_folder=os.path.abspath(video_subdir), episode_trigger=lambda x: x % 10 == 0)
+           return env
+       env = DummyVecEnv([make_env for _ in range(n_envs)])
+    
+    CORRECT ORDER FOR SINGLE ENVIRONMENT:
+    1. Create unique subdirectory: video_subdir = os.path.join(video_dir, f"iter_{iteration}")
+    2. os.makedirs(video_subdir, exist_ok=True)
+    3. def make_env():
+           env = gym.make('{environment}', render_mode='rgb_array')
+           env = RecordVideo(env, video_folder=os.path.abspath(video_subdir), episode_trigger=lambda x: x % 10 == 0)
+           return env
+    4. env = DummyVecEnv([make_env])  # If vectorization needed, or just use make_env() for single env
+    
+    KEY RULES:
+    - ALWAYS use render_mode='rgb_array' in gym.make() for RecordVideo
+    - RecordVideo wraps SINGLE env, NOT DummyVecEnv
+    - Create unique subdirectory per iteration to avoid "overwriting" warnings
+    - Use os.path.abspath() for video_folder parameter
+    - NEVER wrap DummyVecEnv with RecordVideo - it will fail!
+    
+    CORRECT MONITORING SETUP (for logging, NOT video):
+    from stable_baselines3.common.monitor import Monitor
+    env = Monitor(env, filename=os.path.join(log_dir, "monitor.csv"))
+    
+    IF SAME ERROR REPEATS 2+ TIMES:
+    - STOP guessing parameter names
+    - Add introspection code to discover correct API
+    - Or try completely different approach
     
     CODE REQUIREMENTS:
     1. All imports at top
-    2. Use gymnasium.make() for environment
-    3. DummyVecEnv MUST use lambda: DummyVecEnv([lambda: gym.make('{environment}')])
-    4. Train with algorithm and parameters specified by manager
-    5. Evaluate with evaluate_policy()
-    6. Print metrics in EXACT format:
+    2. Create unique video subdirectory: video_subdir = os.path.join(video_dir, f"iter_{iteration}")
+    3. Create video subdirectory: os.makedirs(video_subdir, exist_ok=True)
+    4. For parallel envs: Wrap EACH env with RecordVideo in make_env() function BEFORE DummyVecEnv
+    5. Use gymnasium.make() with render_mode='rgb_array' for RecordVideo
+    6. DummyVecEnv MUST use function that creates wrapped env: DummyVecEnv([make_env for _ in range(n_envs)])
+    7. Train with algorithm and parameters specified by manager
+    8. Evaluate with evaluate_policy()
+    9. Print metrics in EXACT format:
        print(f"MEAN_REWARD:{mean_reward:.2f}")
        print(f"STD_REWARD:{std_reward:.2f}")
        print(f"N_EPISODES:{n_episodes}")
-       print(f"VIDEO_SAVED:{video_folder}")
+       print(f"VIDEO_SAVED:{video_subdir}")
 
     DEVICE:
     - Use CPU for training (do not specify device parameter)
@@ -203,6 +266,10 @@ coder:
     - model.learn() has NO timeout parameter
     - RecordVideo needs render_mode='rgb_array' in gym.make()
     - ALWAYS use DummyVecEnv, NEVER SubprocVecEnv
+    - CRITICAL: RecordVideo wraps INDIVIDUAL env, NOT DummyVecEnv!
+    - CRITICAL: Create unique subdirectory per iteration: video_subdir = os.path.join(video_dir, f"iter_{iteration}")
+    - CRITICAL: Wrap each env with RecordVideo BEFORE creating DummyVecEnv
+    - CRITICAL: Use os.path.abspath(video_subdir) for RecordVideo video_folder parameter
 
     PARALLEL ENVIRONMENTS:
     - Prefer multiple parallel envs: DummyVecEnv([lambda: gym.make('{environment}') for _ in range(8)])
@@ -213,6 +280,8 @@ coder:
     - Wrap training in try/except
     - If exception: print(f"ERROR:{str(e)}")
     - Always call env.close() in finally block
+    - If video recording fails: check that directory was created with os.makedirs() BEFORE RecordVideo
+    - If path errors on Windows: use os.path.abspath() to normalize paths
 
     BUG FIXES FROM REVIEWER:
     - The manager's task may include SPECIFIC bug fixes from the reviewer
@@ -227,6 +296,7 @@ coder:
     
     Environment: {environment}
     Video directory: {video_dir}
+    Current iteration: {iteration}
     
     IMPORTANT: The task above may contain SPECIFIC bug fixes from the reviewer.
     If you see exact code changes mentioned (e.g., "change `old_code` to `new_code`"), 
@@ -352,9 +422,7 @@ reviewer:
     {manager_guidance}
     
     CODE TO REVIEW:
-    ```python
     {code}
-    ```
     
     TESTER'S ANALYSIS (from execution outputs only - tester did NOT see the code):
     {test_results}

@@ -20,12 +20,6 @@ class Algorithm(BaseModel):
     name: str = Field(default="PPO", description="Stable-Baselines3 algorithm")
     parameters: Dict[str, Any] = Field(default_factory=dict)
 
-class Training(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    total_timesteps: int
-    eval_frequency: int
-    n_eval_episodes: int
-
 class Video(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool
@@ -57,7 +51,6 @@ class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     environment: Environment
     environment_progression: list[EnvironmentStep] = Field(default_factory=list, description="List of environments from easy to hard")
-    training: Training
     video: Video
     agents: Agents
     llm: Llm
@@ -94,11 +87,6 @@ class Config:
     @property
     def environment_progression(self) -> list[EnvironmentStep]:
         return self.project.environment_progression
-
-
-    @property
-    def training(self) -> Training:
-        return self.project.training
 
     @property
     def video(self) -> Video:

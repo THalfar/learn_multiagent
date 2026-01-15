@@ -557,7 +557,6 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     print("─" * 70 + "\n")
                 
                 # Print reviewer's cynical report immediately
-                from src.utils.banners import print_reviewer_cynical_report
                 print_reviewer_cynical_report(reviewer_report, reviewer_timing)
                 
                 # Log environment switch
