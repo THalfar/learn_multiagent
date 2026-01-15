@@ -96,6 +96,7 @@ class Coder(BaseAgent):
 
     def __call__(self, state: dict) -> dict:
         # Coder doesn't talk - just works silently
+        print("[dim]Coder is generating code... (this may take a moment if loading models)[/dim]")
         prompt_dict = self.config.get_prompt("coder")
         
         # Normalize video_dir to absolute path (fixes Windows path issues)

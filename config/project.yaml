@@ -53,10 +53,10 @@ llm:
 
 # LLM routing - which agent uses which model
 agent_llm:
-  manager:  "qwq:32b"
-  reviewer: "deepseek-r1:70b"
-  coder:  "qwen3-coder:30b"
-  tester: "qwq:32b"
+  manager:  "deepseek-r1:32b"
+  reviewer:  "api" #"deepseek-r1:70b"
+  coder:   "deepseek-r1:32b"
+  tester: "deepseek-r1:32b"
 
 # Ollama settings (used for all non-api models)
 ollama:

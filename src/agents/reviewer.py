@@ -18,11 +18,11 @@ class Reviewer(BaseAgent):
         
         manager_guidance = state.get("manager_guidance", "")
         if manager_guidance:
-            print(f"\n[blue]Manager's intent:[/blue] {manager_guidance[:200]}...")
+            print(f"\n[blue]Manager's intent:[/blue] {manager_guidance}")
         
         test_results = state.get("test_results", "")
         if test_results:
-            print(f"\n[yellow]Tester's analysis (from outputs only):[/yellow] {test_results[:300]}...")
+            print(f"\n[yellow]Tester's analysis (from outputs only):[/yellow] {test_results}")
         
         print("\n[bold magenta]Reviewing code, tester analysis, and manager intent...[/bold magenta]")
         print("─" * 70 + "\n")
@@ -36,17 +36,15 @@ class Reviewer(BaseAgent):
         # Get manager's guidance (what manager wanted)
         manager_guidance = state.get("manager_guidance", "No specific guidance from manager")
         
-        # Reviewer gets full code and error output (stderr), but not normal output (stdout)
+        # Reviewer gets code, manager's guidance, and tester's analysis - no raw execution output
+        # This simulates real work: senior reviews code and reports, not raw logs
         code = state.get("code", "")
-        execution_stderr = state.get("execution_stderr", "")
-        
+
         prompt_dict = self.config.get_prompt("reviewer")
         task_template = prompt_dict["task_template"].format(
             manager_guidance=manager_guidance,
             code=code,
             test_results=test_results,
-            execution_stdout="",  # Reviewer does not see normal stdout output
-            execution_stderr=execution_stderr,
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos"),
         )
@@ -71,23 +69,41 @@ class Reviewer(BaseAgent):
         def extract_json(content):
             """Extract and parse JSON from LLM response, handling various formats."""
             import re
+            
+            if not content:
+                return "{}"
+                
             content = content.strip()
 
             # Remove thinking tags (common in reasoning models)
             # Handle both <think>...</think> and <thinking>...</thinking>
-            content = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
-            content = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
-            content = content.strip()
+            # We keep a copy of content with tags in case we need to fallback
+            content_clean = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
+            content_clean = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', content_clean, flags=re.DOTALL | re.IGNORECASE)
+            
+            # If cleaning removed everything, revert to original content (maybe JSON is inside tags or mixed)
+            if not content_clean.strip():
+                content_to_use = content
+            else:
+                content_to_use = content_clean
 
             # Try to extract from markdown code blocks first
-            json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+            json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content_to_use, re.DOTALL)
             if json_match:
-                content = json_match.group(1).strip()
+                content_to_use = json_match.group(1).strip()
 
             # Try to find JSON object in the content using balanced bracket matching
-            json_start = content.find('{')
+            json_start = content_to_use.find('{')
             if json_start == -1:
-                return content  # No JSON object found
+                # Try finding in original content if we haven't already
+                if content_to_use != content:
+                    json_start = content.find('{')
+                    if json_start != -1:
+                        content_to_use = content
+                    else:
+                        return content_to_use # Return as is, let json.loads fail naturally or handle later
+                else:
+                    return content_to_use
             
             # Use stack-based approach to find the matching closing brace
             # This handles nested objects and arrays correctly
@@ -96,8 +112,8 @@ class Reviewer(BaseAgent):
             escape_next = False
             json_end = json_start
             
-            for i in range(json_start, len(content)):
-                char = content[i]
+            for i in range(json_start, len(content_to_use)):
+                char = content_to_use[i]
                 
                 if escape_next:
                     escape_next = False
@@ -129,9 +145,9 @@ class Reviewer(BaseAgent):
                         stack.pop()
             
             if json_end > json_start:
-                content = content[json_start:json_end]
+                content_to_use = content_to_use[json_start:json_end]
 
-            return content
+            return content_to_use
 
         # Try parsing with retry logic
         max_retries = 2

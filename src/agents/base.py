@@ -1,9 +1,33 @@
 import logging
 import os
 import time
+import requests
 from src.utils.timer import AgentTiming, RunStatistics
 from langchain_openai import ChatOpenAI
 from rich.console import Console
+
+
+def unload_ollama_models(ollama_base_url: str = "http://localhost:11434"):
+    """Unload all models from Ollama to free VRAM."""
+    # Strip /v1 suffix if present (native API doesn't use it)
+    base_url = ollama_base_url.replace("/v1", "").rstrip("/")
+    
+    try:
+        response = requests.get(f"{base_url}/api/ps", timeout=10)
+        if response.status_code == 200:
+            running = response.json().get("models", [])
+            for model in running:
+                model_name = model.get("name", "")
+                if model_name:
+                    # Unload by setting keep_alive to 0 (minimal prompt required by API)
+                    requests.post(
+                        f"{base_url}/api/generate",
+                        json={"model": model_name, "prompt": "", "keep_alive": 0},
+                        timeout=10
+                    )
+    except Exception as e:
+        # print(f"[dim]Warning: Failed to unload models: {e}[/dim]")
+        pass
 
 class BaseAgent:
     """
@@ -24,16 +48,22 @@ class BaseAgent:
                 model=os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning"),
                 base_url=os.getenv("OPENAI_BASE_URL"),
                 api_key=os.getenv("OPENAI_API_KEY"),
-                temperature=0
+                temperature=0,
+                timeout=120.0  # 2 minutes for API
             )
             # Using API - no log needed
         else:
+            # Unload any existing models before using new one
+            # unload_ollama_models(config.ollama.base_url)
+            
             # Use Ollama with specified model
             self.llm = ChatOpenAI(
                 model=model_name,
                 base_url=config.ollama.base_url,
                 api_key=config.ollama.api_key,
-                temperature=0
+                temperature=0,
+                timeout=300.0,  # 5 minutes for model swaps + generation
+                max_retries=2   # Retry on transient failures
             )
             # Using Ollama - no log needed
         
@@ -202,6 +232,11 @@ class BaseAgent:
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
         
+        # If using Ollama (not API), unload other models first
+        if self.model_name != "api":
+            # unload_ollama_models(self.config.ollama.base_url)
+            pass
+        
         timing = AgentTiming(agent=self.agent_name, iteration=iteration)
         timing.start_time = time.time()
         
@@ -261,6 +296,11 @@ class BaseAgent:
         # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
+        
+        # If using Ollama (not API), unload other models first
+        if self.model_name != "api":
+            # unload_ollama_models(self.config.ollama.base_url)
+            pass
         
         result = self.llm.invoke(prompt)
         

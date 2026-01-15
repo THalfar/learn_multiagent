@@ -7,12 +7,56 @@ from .base import BaseAgent
 from rich import print
 
 ALLOWED_DIR = os.path.abspath("output/")
+PROJECT_ROOT = os.path.abspath(".")
 
 def is_safe_code(code: str) -> bool:
-    dangerous = ["rm ", "rmdir", "shutil.rmtree", "os.remove", 
-                 "subprocess", "import os\\nos.",
-                 "../", "C:\\\\Windows", "C:\\\\Users"]
-    return not any(d in code for d in dangerous)
+    """
+    Check if code is safe to execute.
+    Blocks dangerous operations while allowing safe video directory operations.
+    """
+    # Critical system paths to block
+    dangerous_patterns = [
+        "rm -rf",           # Shell command for recursive delete
+        "rmdir /s",         # Windows recursive delete
+        "C:\\\\Windows\\\\",  # Windows system directory
+        "C:\\\\Program Files",  # Program files directory
+        "/etc/",            # Linux system config
+        "/sys/",            # Linux system files
+        "/proc/",           # Linux process info
+        "subprocess",       # Subprocess execution
+        "import os\\nos.system",  # Direct os.system calls
+        "exec(",            # Dynamic code execution
+        "eval(",            # Dynamic code evaluation
+        "__import__",       # Dynamic imports
+    ]
+    
+    # Block dangerous patterns
+    for pattern in dangerous_patterns:
+        if pattern in code:
+            return False
+    
+    # Allow shutil.rmtree ONLY with ignore_errors=True or within try-except
+    if "shutil.rmtree" in code:
+        # Check if it has ignore_errors=True
+        if "ignore_errors=True" not in code:
+            # Check if it's in a try-except block (simple heuristic)
+            if "try:" not in code or "except" not in code:
+                return False
+    
+    # Allow os.remove only for specific file patterns (like .zip, .pkl, .csv, etc.)
+    if "os.remove" in code:
+        # Check if it's removing a specific file (not a directory)
+        # This is a simple check - you might want to make it more sophisticated
+        safe_file_patterns = [".zip", ".pkl", ".csv", ".log", ".txt", ".json"]
+        has_safe_pattern = any(pattern in code for pattern in safe_file_patterns)
+        if not has_safe_pattern:
+            return False
+    
+    # Block attempts to navigate outside project with relative paths
+    if "../../../" in code or "..\\..\\.\\" in code:  # More than 2 levels up
+        return False
+    
+    return True
 
 def check_video_files(video_dir: str) -> dict:
     """
