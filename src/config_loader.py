@@ -30,6 +30,7 @@ class Agents(BaseModel):
     model_config = ConfigDict(extra='forbid')
     max_iterations: int
     show_thinking: bool = Field(default=False, description="Show agent thinking process output")
+    show_coder_output: bool = Field(default=True, description="Show the code that Coder generates (syntax highlighted)")
 
 class Llm(BaseModel):
     model_config = ConfigDict(extra='forbid')

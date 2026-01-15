@@ -8,25 +8,42 @@ from rich.console import Console
 
 
 def unload_ollama_models(ollama_base_url: str = "http://localhost:11434"):
-    """Unload all models from Ollama to free VRAM."""
+    """Unload all models from Ollama to free VRAM and WAIT for unload to complete."""
     # Strip /v1 suffix if present (native API doesn't use it)
     base_url = ollama_base_url.replace("/v1", "").rstrip("/")
-    
+
     try:
         response = requests.get(f"{base_url}/api/ps", timeout=10)
         if response.status_code == 200:
             running = response.json().get("models", [])
+            if running:
+                print(f"[dim]Unloading {len(running)} model(s) from Ollama...[/dim]")
             for model in running:
                 model_name = model.get("name", "")
                 if model_name:
+                    print(f"[dim]  Unloading {model_name}...[/dim]")
                     # Unload by setting keep_alive to 0 (minimal prompt required by API)
                     requests.post(
                         f"{base_url}/api/generate",
                         json={"model": model_name, "prompt": "", "keep_alive": 0},
                         timeout=10
                     )
+
+            # Wait for unload to complete by checking if models are actually gone
+            if running:
+                max_wait = 30  # Wait up to 30 seconds
+                for i in range(max_wait):
+                    time.sleep(1)
+                    check_response = requests.get(f"{base_url}/api/ps", timeout=10)
+                    if check_response.status_code == 200:
+                        still_running = check_response.json().get("models", [])
+                        if not still_running:
+                            print(f"[dim]  ✓ All models unloaded ({i+1}s)[/dim]")
+                            break
+                        if i == max_wait - 1:
+                            print(f"[yellow]  Warning: Models still loaded after {max_wait}s[/yellow]")
     except Exception as e:
-        # print(f"[dim]Warning: Failed to unload models: {e}[/dim]")
+        print(f"[yellow]Warning: Failed to unload models: {e}[/yellow]")
         pass
 
 class BaseAgent:
@@ -53,17 +70,32 @@ class BaseAgent:
             )
             # Using API - no log needed
         else:
-            # Unload any existing models before using new one
-            # unload_ollama_models(config.ollama.base_url)
-            
-            # Use Ollama with specified model
+            # Unload any existing models before using new one (prevents VRAM conflicts with 30B models)
+            unload_ollama_models(config.ollama.base_url)
+
+            # Preload the model explicitly so we see loading time
+            print(f"[dim]Loading model {model_name}...[/dim]")
+            preload_start = time.time()
+            try:
+                base_url = config.ollama.base_url.replace("/v1", "").rstrip("/")
+                requests.post(
+                    f"{base_url}/api/generate",
+                    json={"model": model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                    timeout=120  # 2 minutes for model loading
+                )
+                preload_time = time.time() - preload_start
+                print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
+            except Exception as e:
+                print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+
+            # Use Ollama with specified model - no token limits, let coder be smart
             self.llm = ChatOpenAI(
                 model=model_name,
                 base_url=config.ollama.base_url,
                 api_key=config.ollama.api_key,
                 temperature=0,
-                timeout=300.0,  # 5 minutes for model swaps + generation
-                max_retries=2   # Retry on transient failures
+                timeout=300.0,  # 5 minutes for generation (model already loaded)
+                max_retries=2  # Retry on transient failures
             )
             # Using Ollama - no log needed
         

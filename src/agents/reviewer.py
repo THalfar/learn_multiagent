@@ -344,8 +344,20 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 total_time = sum(durations)
                 avg_time = sum(durations) / len(durations)
                 agent_stats_lines.append(f"- {agent.capitalize()}: {len(agent_timings)} calls, {total_time:.1f}s total, {avg_time:.1f}s avg")
-        
+
         agent_stats_text = "\n".join(agent_stats_lines) if agent_stats_lines else "No agent statistics available"
+
+        # Calculate code generation stats
+        code_stats = stats.get_code_stats() if hasattr(stats, 'get_code_stats') else {}
+        if code_stats:
+            code_stats_text = f"""
+CODE GENERATION STATISTICS:
+- Total iterations: {code_stats.get('total_iterations', 0)}
+- Total lines of code: {code_stats.get('total_lines', 0):,}
+- Average lines per iteration: {code_stats.get('avg_lines_per_iteration', 0):.1f}
+- Min/Max lines: {code_stats.get('min_lines', 0)}/{code_stats.get('max_lines', 0)}"""
+        else:
+            code_stats_text = "Code statistics not available"
         
         # Build prompt
         prompt_dict = self.config.get_prompt("reviewer")
@@ -372,6 +384,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             solved_count=len(solved_environments),
             total_envs=len(env_progression) if env_progression else 1,
             agent_stats=agent_stats_text,
+            code_stats=code_stats_text,
             test_results=test_results[:2000] if test_results else "N/A",  # Longer test results for context
             review_feedback=review_feedback[:500] if review_feedback else "N/A"
         )

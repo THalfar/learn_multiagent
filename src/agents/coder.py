@@ -1,8 +1,13 @@
 from .base import BaseAgent
 from rich import print
+from rich.syntax import Syntax
+from rich.panel import Panel
+from rich.console import Console
 import os
 import random
 import difflib
+
+console = Console()
 
 class Coder(BaseAgent):
     def __init__(self, config):
@@ -47,10 +52,10 @@ class Coder(BaseAgent):
                 if diff:
                     # Show diff (skip first 2 lines which are headers)
                     diff_text = "".join(diff[2:])  # Skip "---" and "+++" headers
-                    # Limit diff to reasonable size (max 300 lines to avoid context overflow)
+                    # Show full diff for learning (RL scripts are small, full context helps coder learn)
                     diff_lines = diff_text.splitlines()
-                    if len(diff_lines) > 300:
-                        diff_text = "\n".join(diff_lines[:300]) + "\n... (diff truncated, showing first 300 of {} lines)".format(len(diff_lines))
+                    if len(diff_lines) > 400:  # Generous limit for full visibility
+                        diff_text = "\n".join(diff_lines[:400]) + "\n... (diff truncated, showing first 400 of {} lines)".format(len(diff_lines))
                     return f"Code changes (diff from previous iteration):\n{diff_text}"
             except Exception:
                 # If diff generation fails, fall through to showing previous code
@@ -59,18 +64,15 @@ class Coder(BaseAgent):
         # If we have previous code but no current code (or diff failed), show previous code
         if prev_code:
             prev_lines = prev_code.splitlines()
-            # Show full code if it's reasonably small (RL training scripts are usually < 400 lines)
-            # This gives coder full context to understand and fix issues
-            # Limit to 400 lines to avoid context overflow issues
-            if len(prev_lines) <= 400:
-                # Show full code - these are small enough to fit in context
+            # Show full context - RL scripts are small, coder benefits from seeing everything
+            if len(prev_lines) <= 500:  # Most RL scripts fit here
+                # Show full code - coder sees everything, learns better
                 return f"Previous iteration code (iter {iteration - 1}, {len(prev_lines)} lines):\n" + "\n".join(prev_lines)
             else:
-                # For very long code, show first 100 and last 100 lines (captures imports/start and main logic/end)
-                # This ensures we see both the setup and the critical parts where errors often occur
-                first_part = "\n".join(prev_lines[:100])
-                last_part = "\n".join(prev_lines[-100:])
-                return f"Previous iteration code (iter {iteration - 1}, showing first 100 and last 100 of {len(prev_lines)} total lines):\n{first_part}\n... ({len(prev_lines) - 200} lines omitted) ...\n{last_part}"
+                # For very long code, show generous context from start and end
+                first_part = "\n".join(prev_lines[:150])
+                last_part = "\n".join(prev_lines[-150:])
+                return f"Previous iteration code (iter {iteration - 1}, showing first 150 and last 150 of {len(prev_lines)} total lines):\n{first_part}\n... ({len(prev_lines) - 300} lines omitted) ...\n{last_part}"
         
         # If we have current code but no previous code, show current code
         if current_code:
@@ -95,8 +97,10 @@ class Coder(BaseAgent):
         return ""
 
     def __call__(self, state: dict) -> dict:
-        # Coder doesn't talk - just works silently
-        print("[dim]Coder is generating code... (this may take a moment if loading models)[/dim]")
+        # Coder is working
+        if not self.config.agents.show_coder_output:
+            # Only show simple message if not displaying code
+            print("[dim]Coder is generating code... (this may take a moment if loading models)[/dim]")
         prompt_dict = self.config.get_prompt("coder")
         
         # Normalize video_dir to absolute path (fixes Windows path issues)
@@ -132,7 +136,15 @@ class Coder(BaseAgent):
             self.print_token_stats(latest_timing)
         
         code = response.content.strip()
-        
+
+        # DEBUG: Log what the model actually outputs (only if NOT showing full code output)
+        if not self.config.agents.show_coder_output:
+            print(f"[dim][DEBUG] Coder model output length: {len(code)} chars[/dim]")
+            print(f"[dim][DEBUG] First 300 chars: {code[:300]}[/dim]")
+        if not code.startswith('import'):
+            print(f"[bold red]WARNING: Code doesn't start with 'import'! First 100 chars:[/bold red]")
+            print(f"[red]{code[:100]}[/red]")
+
         # Remove any thinking tags from code (shouldn't be there, but safety check)
         import re
         code = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
@@ -146,14 +158,57 @@ class Coder(BaseAgent):
         if code.endswith('```'):
             code = code[:-3].rstrip()
         code = code.strip()
-        
+
+        # Show generated code if enabled (visually formatted)
+        if self.config.agents.show_coder_output:
+            iteration = state.get("iteration", 0)
+            lines_count = len(code.splitlines())
+            task = state.get("current_task", "No task specified")
+
+            # Show task summary first
+            console.print("\n" + "─" * 70)
+            console.print(f"[bold cyan]🔧 CODER - Iteration {iteration}[/bold cyan]")
+            console.print("─" * 70)
+            console.print(f"[yellow]Task:[/yellow] {task[:200]}{'...' if len(task) > 200 else ''}")
+            console.print(f"[dim]Generating complete Python script...[/dim]")
+            console.print()
+
+            # Create syntax-highlighted code
+            syntax = Syntax(
+                code,
+                "python",
+                theme="monokai",
+                line_numbers=True,
+                word_wrap=False,
+                background_color="default"
+            )
+
+            # Create beautiful panel with the code
+            panel = Panel(
+                syntax,
+                title=f"[bold green]✓ Generated Code[/bold green]",
+                subtitle=f"[dim]{lines_count} lines • Python 3.x[/dim]",
+                border_style="green",
+                padding=(1, 2)
+            )
+
+            console.print(panel)
+            console.print("─" * 70 + "\n")
+
+        # Track code statistics
+        lines_count = len(code.splitlines())
+        iteration = state.get("iteration", 0)
+        stats_obj = state.get("stats")
+        if stats_obj:
+            stats_obj.add_code_stats(iteration, lines_count)
+
         # Log to conversation file
         logger = state.get("conversation_logger")
         if logger:
             logger.log_coder(
-                iteration=state.get("iteration", 0),
+                iteration=iteration,
                 code=code,
                 task=state.get("current_task", "")
             )
-        
+
         return {"code": code}

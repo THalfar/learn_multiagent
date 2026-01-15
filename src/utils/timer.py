@@ -14,16 +14,36 @@ class AgentTiming:
     tokens_in: int = 0
     tokens_out: int = 0
 
-@dataclass 
+@dataclass
 class RunStatistics:
     """Track statistics for entire run"""
     run_id: str
     start_time: datetime = field(default_factory=datetime.now)
     end_time: datetime = None
     timings: List[AgentTiming] = field(default_factory=list)
-    
+    code_lines_per_iteration: Dict[int, int] = field(default_factory=dict)  # iteration -> lines of code
+
     def add_timing(self, timing: AgentTiming):
         self.timings.append(timing)
+
+    def add_code_stats(self, iteration: int, lines_of_code: int):
+        """Track lines of code generated per iteration"""
+        self.code_lines_per_iteration[iteration] = lines_of_code
+
+    def get_code_stats(self) -> dict:
+        """Get statistics about generated code"""
+        if not self.code_lines_per_iteration:
+            return {}
+
+        lines = list(self.code_lines_per_iteration.values())
+        return {
+            "total_iterations": len(lines),
+            "total_lines": sum(lines),
+            "avg_lines_per_iteration": sum(lines) / len(lines),
+            "min_lines": min(lines),
+            "max_lines": max(lines),
+            "lines_per_iteration": self.code_lines_per_iteration
+        }
     
     def get_agent_stats(self, agent: str) -> dict:
         agent_timings = [t for t in self.timings if t.agent == agent]
@@ -143,14 +163,26 @@ class RunStatistics:
                 calls = len([t for t in self.timings if t.agent == agent])
                 print(f"{agent:<12} {calls:<8} {in_str:<20} {out_str:<20} {total_str:<20}")
         
+        # Code statistics
+        code_stats = self.get_code_stats()
+        if code_stats:
+            print("\n💻 CODE GENERATION STATISTICS:")
+            print("-"*60)
+            print(f"Total iterations with code: {code_stats['total_iterations']}")
+            print(f"Total lines of code generated: {code_stats['total_lines']:,}")
+            print(f"Average lines per iteration: {code_stats['avg_lines_per_iteration']:.1f}")
+            print(f"Min/Max lines per iteration: {code_stats['min_lines']}/{code_stats['max_lines']}")
+
         print("\n⏱️  PER-ITERATION BREAKDOWN:")
         print("-"*60)
         max_iter = max(t.iteration for t in self.timings) if self.timings else 0
         for i in range(1, max_iter + 1):
             iter_stats = self.get_iteration_stats(i)
             agents_str = " | ".join(f"{k}: {v:.1f}s" for k, v in iter_stats["agents"].items())
-            print(f"Iter {i}: {iter_stats['total_time']:.1f}s total [{agents_str}]")
-        
+            code_lines = self.code_lines_per_iteration.get(i, 0)
+            code_info = f" [{code_lines} lines]" if code_lines > 0 else ""
+            print(f"Iter {i}: {iter_stats['total_time']:.1f}s total [{agents_str}]{code_info}")
+
         print("="*60)
     
     def save_to_file(self, filepath: str):
@@ -170,13 +202,14 @@ class RunStatistics:
                 } for t in self.timings
             ],
             "agent_stats": {
-                agent: self.get_agent_stats(agent) 
+                agent: self.get_agent_stats(agent)
                 for agent in ["manager", "coder", "tester", "reviewer"]
             },
             "agent_token_stats": {
                 agent: self.get_agent_token_stats(agent)
                 for agent in ["manager", "coder", "tester", "reviewer"]
-            }
+            },
+            "code_stats": self.get_code_stats()
         }
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2)

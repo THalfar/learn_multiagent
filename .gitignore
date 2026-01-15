@@ -5,3 +5,20 @@ output/
 *.zip
 *.csv
 *.txt 
+logs/
+tensorboard/
+output/
+runs/
+*.mp4
+*.avi
+
+# Model checkpoints
+*.zip
+*.pkl
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

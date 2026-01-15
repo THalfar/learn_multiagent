@@ -6,17 +6,25 @@ environment_progression:
     max_episode_steps: 500
     success_threshold: 475  # Official threshold: 475.0 over 100 episodes
     execution_timeout: 600  # 10 minutes (Classic Control environments are fast)
+  - name: "CartPole-v0"
+    max_episode_steps: 200
+    success_threshold: 195  # Official threshold: 195.0 over 100 episodes (easier than v1)
+    execution_timeout: 600  # 10 minutes - quick warmup task
   - name: "Pendulum-v1"
     max_episode_steps: 200
     success_threshold: -300  # Good performance: -200 to -300 (reward range: -1600 to -200)
     execution_timeout: 600  # 10 minutes
+  - name: "MountainCarContinuous-v0"
+    max_episode_steps: 999
+    success_threshold: 90  # Official threshold: 90.0 over 100 episodes (continuous version is easier)
+    execution_timeout: 600  # 10 minutes - easier than discrete version
   - name: "Acrobot-v1"
     max_episode_steps: 500
     success_threshold: -100  # Official threshold: -100.0 over 100 episodes
     execution_timeout: 600  # 10 minutes
   - name: "MountainCar-v0"
     max_episode_steps: 200
-    success_threshold: -110  # Official threshold: -110.0 over 100 episodes
+    success_threshold: -110  # Official threshold: -110.0 over 100 episodes (HARD - sparse rewards!)
     execution_timeout: 600  # 10 minutes
   - name: "LunarLander-v2"
     max_episode_steps: 1000
@@ -46,6 +54,7 @@ video:
 agents:
   max_iterations: 420
   show_thinking: false  # Show agent thinking process (reasoning model output)
+  show_coder_output: false  # Show the code that Coder generates (visually formatted)
 
 # LLM settings
 llm:
@@ -54,9 +63,9 @@ llm:
 # LLM routing - which agent uses which model
 agent_llm:
   manager:  "deepseek-r1:32b"
-  reviewer:  "api" #"deepseek-r1:70b"
-  coder:   "deepseek-r1:32b"
-  tester: "deepseek-r1:32b"
+  reviewer:  "api" 
+  coder:   "qwen2.5-coder:14b"  
+  tester: "deepseek-r1:32b"  
 
 # Ollama settings (used for all non-api models)
 ollama:
