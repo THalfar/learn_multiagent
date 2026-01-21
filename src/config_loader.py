@@ -48,6 +48,7 @@ class Agents(BaseModel):
     max_iterations: int
     show_thinking: bool = Field(default=False, description="Show agent thinking process output")
     show_coder_output: bool = Field(default=True, description="Show the code that Coder generates (syntax highlighted)")
+    show_model_loading: bool = Field(default=False, description="Show Ollama model loading/unloading debug messages")
     history_window: HistoryWindow = Field(default_factory=HistoryWindow, description="Siloed conversation history per agent")
     agent_opinions: AgentOpinionsConfig = Field(default_factory=AgentOpinionsConfig, description="Agent opinions/chatter configuration")
 

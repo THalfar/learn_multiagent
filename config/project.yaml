@@ -55,6 +55,7 @@ agents:
   max_iterations: 420
   show_thinking: true  # Show agent thinking process (reasoning model output)
   show_coder_output: true  # Show the code that Coder generates (visually formatted)
+  show_model_loading: false  # Show Ollama model load/unload debug messages (turn on for debugging)
   history_window:  # How many of their OWN previous messages each agent can see (siloed memory)
     manager: 10    # Manager remembers strategies and decisions
     coder: 0       # Coder has no memory - pure stateless executor
@@ -81,7 +82,7 @@ llm:
 agent_llm:
   manager:  "deepseek-r1:32b"  
   reviewer:  "api" 
-  coder:   "qwen3-coder:30b"  
+  coder:   "deepseek-r1:32b"  
   tester: "deepseek-r1:32b"  
 
 # Ollama settings (used for all non-api models)

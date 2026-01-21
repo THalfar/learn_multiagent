@@ -23,6 +23,11 @@ class Reviewer(BaseAgent):
         test_results = state.get("test_results", "")
         if test_results:
             print(f"\n[yellow]Tester's analysis (from outputs only):[/yellow] {test_results}")
+
+        # Check if tester responded to SHODAN's previous request
+        tester_response = state.get("tester_reviewer_response", "")
+        if tester_response:
+            print(f"\n[cyan]📬 Tester's response to your request:[/cyan] {tester_response}")
         
         print("\n[bold magenta]Reviewing code, tester analysis, and manager intent...[/bold magenta]")
         print("─" * 70 + "\n")
@@ -43,6 +48,9 @@ class Reviewer(BaseAgent):
         # Get agent opinions context (insect chatter for SHODAN)
         agent_opinions_context = self.format_agent_opinions_context(state)
 
+        # Get tester's response to previous SHODAN request
+        tester_response = state.get("tester_reviewer_response", "No specific response")
+
         prompt_dict = self.config.get_prompt("reviewer")
         task_template = prompt_dict["task_template"].format(
             manager_guidance=manager_guidance,
@@ -51,6 +59,7 @@ class Reviewer(BaseAgent):
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos"),
             agent_opinions_context=agent_opinions_context,
+            tester_response=tester_response,
         )
         system_prompt = prompt_dict["system"].format(
             success_threshold=success_threshold,

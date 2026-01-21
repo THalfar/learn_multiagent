@@ -268,13 +268,25 @@ class Tester(BaseAgent):
         code_path = f"{code_dir}/agent_code_iter_{state.get('iteration', 0)}.py"
 
         print("\n" + "─" * 70)
-        print("[bold yellow]🧪 TESTER: Preparing Execution...[/bold yellow]")
+        print("[bold yellow]🧪 TESTER: Waking up...[/bold yellow]")
         print("─" * 70)
-        print("[dim]📝 Writing code to sandbox...[/dim]")
+        print("[yellow]💭 \"Another day, another test run. Let's see what the Coder cooked up this time...\"[/yellow]")
+        print()
+        print("[dim]📝 Preparing sandbox environment...[/dim]")
         print(f"[dim]   Code file: {code_path}[/dim]")
         print(f"[dim]   Video output: {video_dir}[/dim]")
-        print(f"[dim]   Timeout: {execution_timeout}s[/dim]")
-        print("[dim]🔒 Tester cannot see code - only execution results[/dim]")
+        print(f"[dim]   Timeout: {execution_timeout}s ({execution_timeout//60}m {execution_timeout%60}s)[/dim]")
+        print("[dim]🔒 I can't see the code - I judge by results only[/dim]")
+
+        # Check if reviewer has a special request
+        reviewer_instruction = state.get("reviewer_tester_instruction", None)
+        if reviewer_instruction:
+            print()
+            print("[bold cyan]📋 SHODAN's Command:[/bold cyan]")
+            print(f"[cyan]   \"{reviewer_instruction}\"[/cyan]")
+            print("[yellow]💭 \"The machine god has spoken. I shall investigate...\"[/yellow]")
+        else:
+            print("[dim]No special instructions from SHODAN this time.[/dim]")
         print("─" * 70 + "\n")
 
         with open(code_path, "w", encoding="utf-8") as f:
@@ -420,9 +432,23 @@ class Tester(BaseAgent):
             print("─" * 70 + "\n")
 
             # LLM tester analysis - let LLM analyze all outputs (including errors)
-            print("[dim cyan]🤖 Tester LLM analyzing execution results...[/dim cyan]")
+            print("\n" + "─" * 70)
+            print("[bold yellow]🧪 TESTER: Analyzing results...[/bold yellow]")
+            print("─" * 70)
+            print("[yellow]💭 \"Time to make sense of all this output...\"[/yellow]")
+            print()
+            print("[dim cyan]🤖 Engaging analysis mode...[/dim cyan]")
             print(f"[dim]   Model: {self.model_name}[/dim]")
-            print(f"[dim]   Processing stdout ({len(stdout):,} chars) + stderr ({len(result.stderr):,} chars)[/dim]\n")
+            print(f"[dim]   Processing stdout ({len(stdout):,} chars) + stderr ({len(result.stderr):,} chars)[/dim]")
+
+            # Show brief preview of what we're analyzing
+            if stdout:
+                stdout_preview = stdout[:200].replace('\n', ' ').strip()
+                print(f"[dim]   stdout preview: \"{stdout_preview}...\"[/dim]")
+            if result.stderr:
+                stderr_preview = result.stderr[:150].replace('\n', ' ').strip()
+                print(f"[dim]   stderr preview: \"{stderr_preview}...\"[/dim]")
+            print()
             
             # Get success threshold from current environment (execution_timeout already retrieved earlier)
             env_progression = self.config.environment_progression
@@ -498,18 +524,32 @@ class Tester(BaseAgent):
                 success = parsed.get("success", None)
                 metrics = parsed.get("metrics", {})
                 my_opinion = parsed.get("my_opinion", "")  # Tester's personal take
+                reviewer_response = parsed.get("reviewer_response", "")  # Response to SHODAN's request
+                thoughts = parsed.get("thoughts", "")  # Tester's internal thoughts
 
                 # Analysis output - this is the tester's report to reviewer
                 print("\n" + "─" * 70)
-                print("[bold yellow]TESTER → REVIEWER[/bold yellow]")
+                print("[bold yellow]🧪 TESTER'S ANALYSIS COMPLETE[/bold yellow]")
                 print("─" * 70)
-                print(f"[yellow]{summary}[/yellow]")
+
+                # Show tester's thoughts/reasoning (if provided)
+                if thoughts:
+                    print("[yellow]💭 Tester's thoughts:[/yellow]")
+                    print(f"[dim italic]   \"{thoughts}\"[/dim italic]")
+                    print()
+
+                # Main summary
+                print(f"[bold]Summary:[/bold] {summary}")
                 if success is not None:
                     if success:
-                        print(f"[bold green]Result: SUCCESS[/bold green]")
+                        print(f"[bold green]✅ Result: SUCCESS[/bold green]")
                     else:
-                        print(f"[bold red]Result: FAILED[/bold red]")
+                        print(f"[bold red]❌ Result: FAILED[/bold red]")
+
+                # Metrics
                 if metrics:
+                    print()
+                    print("[bold]📊 Metrics:[/bold]")
                     mean = metrics.get("mean_reward")
                     threshold = metrics.get("meets_threshold", False)
                     if mean is not None:
@@ -520,28 +560,48 @@ class Tester(BaseAgent):
                         success_threshold = current_env.success_threshold if current_env else (env_progression[0].success_threshold if env_progression else 0)
 
                         if threshold:
-                            print(f"[bold green]Mean Reward: {mean} (threshold: {success_threshold}) ✓[/bold green]")
+                            print(f"[bold green]   Mean Reward: {mean} (threshold: {success_threshold}) ✓[/bold green]")
                         else:
-                            print(f"[yellow]Mean Reward: {mean} (threshold: {success_threshold}) ✗[/yellow]")
+                            print(f"[yellow]   Mean Reward: {mean} (threshold: {success_threshold}) ✗[/yellow]")
                     if metrics.get("std_reward") is not None:
-                        print(f"[dim]Std Reward: {metrics.get('std_reward')}[/dim]")
+                        print(f"[dim]   Std Reward: {metrics.get('std_reward')}[/dim]")
                     if metrics.get("n_episodes") is not None:
-                        print(f"[dim]Episodes: {metrics.get('n_episodes')}[/dim]")
-                if tester_opinion:
-                    print(f"\n[yellow]Assessment:[/yellow] {tester_opinion}")
+                        print(f"[dim]   Episodes: {metrics.get('n_episodes')}[/dim]")
+                    if metrics.get("video_path"):
+                        print(f"[dim]   Video: {metrics.get('video_path')}[/dim]")
 
-                # Print tester's opinion if provided (team chatter)
+                # Professional assessment for reviewer
+                if tester_opinion:
+                    print()
+                    print(f"[yellow]📋 Assessment for SHODAN:[/yellow]")
+                    print(f"   {tester_opinion}")
+
+                # Response to reviewer's special request (if any)
+                if reviewer_response:
+                    print()
+                    print("[bold cyan]📬 Response to SHODAN's Request:[/bold cyan]")
+                    print(f"[cyan]   {reviewer_response}[/cyan]")
+                elif reviewer_instruction:
+                    print()
+                    print("[dim cyan]📬 SHODAN asked: \"{reviewer_instruction}\"[/dim cyan]")
+                    print("[dim]   (No specific response provided)[/dim]")
+
+                # Team chatter (my_opinion)
                 if my_opinion:
-                    print(f"\n[yellow]💬 Tester's take:[/yellow] {my_opinion}")
+                    print()
+                    print("[yellow]💬 Tester's take (team chatter):[/yellow]")
+                    print(f"[italic]   \"{my_opinion}\"[/italic]")
 
                 print("─" * 70 + "\n")
                 
-                # Combine summary and opinion for reviewer
+                # Combine summary, opinion and reviewer response for the report
+                test_results_parts = [summary]
                 if tester_opinion:
-                    test_results = f"{summary}\n\nTester's assessment: {tester_opinion}"
-                else:
-                    test_results = summary
-                
+                    test_results_parts.append(f"Tester's assessment: {tester_opinion}")
+                if reviewer_response:
+                    test_results_parts.append(f"Response to SHODAN's request: {reviewer_response}")
+                test_results = "\n\n".join(test_results_parts)
+
                 # Remove any thinking tags from test_results (shouldn't be there, but safety check)
                 test_results = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', test_results, flags=re.DOTALL | re.IGNORECASE)
                 test_results = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', test_results, flags=re.DOTALL | re.IGNORECASE)
@@ -570,7 +630,8 @@ class Tester(BaseAgent):
             result_dict = {
                 "test_results": test_results,
                 "execution_stdout": stdout,
-                "execution_stderr": result.stderr
+                "execution_stderr": result.stderr,
+                "tester_reviewer_response": reviewer_response  # Tester's response to SHODAN's request
             }
             result_dict.update(history_update)
             result_dict.update(opinion_update)

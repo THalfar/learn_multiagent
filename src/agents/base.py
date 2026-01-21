@@ -56,7 +56,22 @@ def get_model_context_size(model_name: str) -> int:
     return MODEL_CONTEXT_SIZES["default"]
 
 
-def unload_ollama_models(ollama_base_url: str = "http://localhost:11434"):
+def get_loaded_ollama_model(ollama_base_url: str = "http://localhost:11434") -> str | None:
+    """Check which model is currently loaded in Ollama. Returns model name or None."""
+    base_url = ollama_base_url.replace("/v1", "").rstrip("/")
+    try:
+        response = requests.get(f"{base_url}/api/ps", timeout=5)
+        if response.status_code == 200:
+            running = response.json().get("models", [])
+            if running:
+                # Return first loaded model (usually only one with VRAM constraints)
+                return running[0].get("name", "").split(":")[0]  # Strip tag for comparison
+        return None
+    except Exception:
+        return None
+
+
+def unload_ollama_models(ollama_base_url: str = "http://localhost:11434", verbose: bool = True):
     """Unload all models from Ollama to free VRAM and WAIT for unload to complete."""
     # Strip /v1 suffix if present (native API doesn't use it)
     base_url = ollama_base_url.replace("/v1", "").rstrip("/")
@@ -65,12 +80,13 @@ def unload_ollama_models(ollama_base_url: str = "http://localhost:11434"):
         response = requests.get(f"{base_url}/api/ps", timeout=10)
         if response.status_code == 200:
             running = response.json().get("models", [])
-            if running:
+            if running and verbose:
                 print(f"[dim]Unloading {len(running)} model(s) from Ollama...[/dim]")
             for model in running:
                 model_name = model.get("name", "")
                 if model_name:
-                    print(f"[dim]  Unloading {model_name}...[/dim]")
+                    if verbose:
+                        print(f"[dim]  Unloading {model_name}...[/dim]")
                     # Unload by setting keep_alive to 0 (minimal prompt required by API)
                     requests.post(
                         f"{base_url}/api/generate",
@@ -87,7 +103,8 @@ def unload_ollama_models(ollama_base_url: str = "http://localhost:11434"):
                     if check_response.status_code == 200:
                         still_running = check_response.json().get("models", [])
                         if not still_running:
-                            print(f"[dim]  ✓ All models unloaded ({i+1}s)[/dim]")
+                            if verbose:
+                                print(f"[dim]  ✓ All models unloaded ({i+1}s)[/dim]")
                             break
                         if i == max_wait - 1:
                             print(f"[yellow]  Warning: Models still loaded after {max_wait}s[/yellow]")
@@ -119,23 +136,41 @@ class BaseAgent:
             )
             # Using API - no log needed
         else:
-            # Unload any existing models before using new one (prevents VRAM conflicts with 30B models)
-            unload_ollama_models(config.ollama.base_url)
+            # Check if model loading messages should be shown
+            show_loading = getattr(config.agents, 'show_model_loading', False)
 
-            # Preload the model explicitly so we see loading time
-            print(f"[dim]Loading model {model_name}...[/dim]")
-            preload_start = time.time()
-            try:
-                base_url = config.ollama.base_url.replace("/v1", "").rstrip("/")
-                requests.post(
-                    f"{base_url}/api/generate",
-                    json={"model": model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
-                    timeout=120  # 2 minutes for model loading
-                )
-                preload_time = time.time() - preload_start
-                print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
-            except Exception as e:
-                print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+            # Check if the required model is already loaded (skip swap if same)
+            current_model = get_loaded_ollama_model(config.ollama.base_url)
+            model_base = model_name.split(":")[0]  # Strip tag for comparison
+
+            if current_model and current_model == model_base:
+                # Same model already loaded - skip unload/load!
+                if show_loading:
+                    print(f"[dim]✓ Model {model_name} already loaded, skipping swap[/dim]")
+            else:
+                # Different model or none loaded - need to swap
+                if current_model and show_loading:
+                    print(f"[dim]Swapping {current_model} → {model_name}[/dim]")
+
+                # Unload any existing models before using new one (prevents VRAM conflicts with 30B models)
+                unload_ollama_models(config.ollama.base_url, verbose=show_loading)
+
+                # Preload the model explicitly so we see loading time
+                if show_loading:
+                    print(f"[dim]Loading model {model_name}...[/dim]")
+                preload_start = time.time()
+                try:
+                    base_url = config.ollama.base_url.replace("/v1", "").rstrip("/")
+                    requests.post(
+                        f"{base_url}/api/generate",
+                        json={"model": model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                        timeout=120  # 2 minutes for model loading
+                    )
+                    preload_time = time.time() - preload_start
+                    if show_loading:
+                        print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
+                except Exception as e:
+                    print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
             # Use Ollama with specified model
             # Coder gets reasonable token limit (typical RL script = 100-200 lines = ~2000 tokens)
@@ -320,22 +355,40 @@ class BaseAgent:
 
         # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
-            unload_ollama_models(self.config.ollama.base_url)
+            show_loading = getattr(self.config.agents, 'show_model_loading', False)
 
-            # Preload this agent's model so it's ready
-            print(f"[dim]Loading model {self.model_name}...[/dim]")
-            preload_start = time.time()
-            try:
-                base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
-                requests.post(
-                    f"{base_url}/api/generate",
-                    json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
-                    timeout=120
-                )
-                preload_time = time.time() - preload_start
-                print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
-            except Exception as e:
-                print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+            # Check if same model is already loaded
+            current_model = get_loaded_ollama_model(self.config.ollama.base_url)
+            model_base = self.model_name.split(":")[0]
+
+            if current_model and current_model == model_base:
+                # Same model - skip swap entirely
+                print(f"[dim]🔄 {self.model_name} (same model, no swap)[/dim]")
+            else:
+                # Different model - need to swap
+                swap_start = time.time()
+                unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
+                unload_time = time.time() - swap_start
+
+                # Preload this agent's model so it's ready
+                if show_loading:
+                    print(f"[dim]Loading model {self.model_name}...[/dim]")
+                preload_start = time.time()
+                try:
+                    base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                    requests.post(
+                        f"{base_url}/api/generate",
+                        json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                        timeout=120
+                    )
+                    load_time = time.time() - preload_start
+                    if show_loading:
+                        print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
+                    # Always show brief timing summary
+                    prev = current_model or "none"
+                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s)[/dim]")
+                except Exception as e:
+                    print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
         timing = AgentTiming(agent=self.agent_name, iteration=iteration)
         timing.start_time = time.time()
@@ -778,22 +831,40 @@ class BaseAgent:
 
         # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
-            unload_ollama_models(self.config.ollama.base_url)
+            show_loading = getattr(self.config.agents, 'show_model_loading', False)
 
-            # Preload this agent's model so it's ready
-            print(f"[dim]Loading model {self.model_name}...[/dim]")
-            preload_start = time.time()
-            try:
-                base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
-                requests.post(
-                    f"{base_url}/api/generate",
-                    json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
-                    timeout=120
-                )
-                preload_time = time.time() - preload_start
-                print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
-            except Exception as e:
-                print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+            # Check if same model is already loaded
+            current_model = get_loaded_ollama_model(self.config.ollama.base_url)
+            model_base = self.model_name.split(":")[0]
+
+            if current_model and current_model == model_base:
+                # Same model - skip swap entirely
+                print(f"[dim]🔄 {self.model_name} (same model, no swap)[/dim]")
+            else:
+                # Different model - need to swap
+                swap_start = time.time()
+                unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
+                unload_time = time.time() - swap_start
+
+                # Preload this agent's model so it's ready
+                if show_loading:
+                    print(f"[dim]Loading model {self.model_name}...[/dim]")
+                preload_start = time.time()
+                try:
+                    base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                    requests.post(
+                        f"{base_url}/api/generate",
+                        json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                        timeout=120
+                    )
+                    load_time = time.time() - preload_start
+                    if show_loading:
+                        print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
+                    # Always show brief timing summary
+                    prev = current_model or "none"
+                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s)[/dim]")
+                except Exception as e:
+                    print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
         result = self.llm.invoke(prompt)
 
