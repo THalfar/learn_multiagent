@@ -63,7 +63,7 @@ llm:
 
 # LLM routing - which agent uses which model
 agent_llm:
-  manager:  "deepseek-r1:70b"
+  manager:  "deepseek-r1:32b"
   reviewer:  "api" 
   coder:   "qwen3-coder:30b"  
   tester: "deepseek-r1:32b"  
