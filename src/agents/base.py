@@ -468,11 +468,16 @@ class BaseAgent:
         else:
             console.print(f"[dim green]{context_line}[/dim green]")
 
-    def print_context_breakdown(self, state: dict, prompt_tokens: int = 0):
+    def print_context_breakdown(self, state: dict, prompt_tokens: int = 0, agent_opinions_context: str = ""):
         """
         Print comprehensive breakdown of all context components.
         Shows: own history, team chatter, env reports, prompt, and total usage.
         Helps with context window optimization.
+
+        Args:
+            state: Agent state dict
+            prompt_tokens: Total tokens in the current prompt
+            agent_opinions_context: The formatted agent opinions text (for accurate token counting)
         """
         console = Console()
         context_size = get_model_context_size(self.model_name)
@@ -482,41 +487,60 @@ class BaseAgent:
 
         # 1. Own conversation history
         history_window = getattr(self.config.agents.history_window, self.agent_name, 0)
-        if history_window > 0:
-            messages = state.get("conversation_history", [])
-            agent_messages = [msg for msg in messages if msg.get("agent") == self.agent_name]
-            recent_messages = agent_messages[-history_window:] if len(agent_messages) > history_window else agent_messages
-            if recent_messages:
-                history_text = "\n\n".join([msg.get("content", "") for msg in recent_messages])
-                history_tokens = self.estimate_tokens(history_text)
-                total_tokens += history_tokens
-                components.append({
-                    "name": "Own history",
-                    "count": len(recent_messages),
-                    "unit": "msg",
-                    "tokens": history_tokens,
-                    "icon": "💾"
-                })
+        messages = state.get("conversation_history", [])
+        agent_messages = [msg for msg in messages if msg.get("agent") == self.agent_name]
+        recent_messages = agent_messages[-history_window:] if history_window > 0 and len(agent_messages) > history_window else (agent_messages if history_window > 0 else [])
 
-        # 2. Team chatter (agent opinions)
+        if recent_messages:
+            history_text = "\n\n".join([msg.get("content", "") for msg in recent_messages])
+            history_tokens = self.estimate_tokens(history_text)
+        else:
+            history_tokens = 0
+
+        total_tokens += history_tokens
+        components.append({
+            "name": "Own history",
+            "count": len(recent_messages),
+            "unit": "msg",
+            "tokens": history_tokens,
+            "icon": "💾"
+        })
+
+        # 2. Team chatter (agent opinions) - ALWAYS show for optimization visibility
         agent_opinions_config = getattr(self.config.agents, 'agent_opinions', None)
-        if agent_opinions_config and getattr(agent_opinions_config, 'enabled', False):
+        opinions_enabled = agent_opinions_config and getattr(agent_opinions_config, 'enabled', False)
+
+        # Use the actual formatted context if provided (accurate), otherwise estimate from raw state
+        if agent_opinions_context:
+            opinions_tokens = self.estimate_tokens(agent_opinions_context)
+            opinions_window = getattr(self.config.agents.history_window, 'agent_opinions', 8)
+            opinions = state.get("agent_opinions", [])
+            recent_opinions = opinions[-opinions_window:] if len(opinions) > opinions_window else opinions
+            opinions_count = len(recent_opinions)
+        elif opinions_enabled:
             opinions_window = getattr(self.config.agents.history_window, 'agent_opinions', 8)
             opinions = state.get("agent_opinions", [])
             recent_opinions = opinions[-opinions_window:] if len(opinions) > opinions_window else opinions
             if recent_opinions:
                 opinions_text = "\n".join([op.get("opinion", "") for op in recent_opinions])
                 opinions_tokens = self.estimate_tokens(opinions_text) + 200  # overhead for formatting
-                total_tokens += opinions_tokens
-                components.append({
-                    "name": "Team chatter",
-                    "count": len(recent_opinions),
-                    "unit": "opinions",
-                    "tokens": opinions_tokens,
-                    "icon": "💬"
-                })
+            else:
+                opinions_tokens = 0
+            opinions_count = len(recent_opinions)
+        else:
+            opinions_tokens = 0
+            opinions_count = 0
 
-        # 3. Environment switch reports (kierrosraportit)
+        total_tokens += opinions_tokens
+        components.append({
+            "name": "Team chatter",
+            "count": opinions_count,
+            "unit": "opinions",
+            "tokens": opinions_tokens,
+            "icon": "💬"
+        })
+
+        # 3. Environment switch reports (kierrosraportit) - ALWAYS show
         env_reports_window = getattr(self.config.agents.history_window, 'env_switch_reports', 5)
         env_reports = state.get("env_switch_reports", [])
         recent_reports = env_reports[-env_reports_window:] if len(env_reports) > env_reports_window else env_reports
@@ -526,14 +550,17 @@ class BaseAgent:
                 for r in recent_reports
             ])
             reports_tokens = self.estimate_tokens(reports_text) + 300  # overhead
-            total_tokens += reports_tokens
-            components.append({
-                "name": "Env reports",
-                "count": len(recent_reports),
-                "unit": "reports",
-                "tokens": reports_tokens,
-                "icon": "📊"
-            })
+        else:
+            reports_tokens = 0
+
+        total_tokens += reports_tokens
+        components.append({
+            "name": "Env reports",
+            "count": len(recent_reports),
+            "unit": "reports",
+            "tokens": reports_tokens,
+            "icon": "📊"
+        })
 
         # 4. Current prompt/task (if provided)
         if prompt_tokens > 0:
@@ -788,21 +815,8 @@ class BaseAgent:
         lines.append("Feel free to react to what they said, agree, disagree, or ignore!")
         lines.append("")
 
-        # Print token estimate with context %
+        # Token estimate is now handled by print_context_breakdown (no duplicate print)
         context_text = "\n".join(lines)
-        tokens = self.estimate_tokens(context_text)
-        context_size = get_model_context_size(self.model_name)
-        opinions_pct = (tokens / context_size * 100) if context_size > 0 else 0
-
-        from rich.console import Console
-        console = Console()
-        opinions_msg = f"💬 Team chatter: {len(recent_opinions)} opinions, ~{tokens:,} tokens ({opinions_pct:.1f}% of context)"
-
-        if opinions_pct >= 15:
-            console.print(f"[yellow]{opinions_msg} ⚠️[/yellow]")
-        else:
-            console.print(f"[dim cyan]{opinions_msg}[/dim cyan]")
-
         return context_text
 
     def save_opinion_to_state(self, state: dict, opinion: str):

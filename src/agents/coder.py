@@ -226,9 +226,9 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
 
         full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section
 
-        # Print context breakdown before LLM call
+        # Print context breakdown before LLM call (coder has no team chatter)
         prompt_tokens = self.estimate_tokens(full_prompt)
-        self.print_context_breakdown(state, prompt_tokens)
+        self.print_context_breakdown(state, prompt_tokens, "")
 
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
         

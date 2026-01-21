@@ -73,7 +73,7 @@ class Reviewer(BaseAgent):
 
         # Print context breakdown before LLM call
         prompt_tokens = self.estimate_tokens(full_prompt)
-        self.print_context_breakdown(state, prompt_tokens)
+        self.print_context_breakdown(state, prompt_tokens, agent_opinions_context)
 
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
         
