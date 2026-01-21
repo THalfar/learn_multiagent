@@ -4,7 +4,6 @@ from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.console import Console
 import os
-import difflib
 
 console = Console()
 
@@ -14,158 +13,72 @@ class Coder(BaseAgent):
 
     def _get_code_context(self, state: dict) -> str:
         """
-        Get code context for coder to see:
-        - If previous code exists in file, show it (or diff if current code exists)
-        - Otherwise, show current code if available
-        - This ensures coder always sees previous version, preventing loops from scratch
+        Get previous iteration's code for coder to see.
+        Simple: if previous code exists, show it. Otherwise empty.
+        Coder always writes complete scripts, no diffs needed.
         """
-        current_code = state.get("code", "")
         iteration = state.get("iteration", 0)
         run_id = state.get("run_id", "")
-        
-        # Try to load previous iteration code from saved file
-        prev_code = None
-        if iteration > 0 and run_id:
-            prev_code_path = f"output/{run_id}/code/agent_code_iter_{iteration - 1}.py"
-            if os.path.exists(prev_code_path):
-                try:
-                    with open(prev_code_path, "r", encoding="utf-8") as f:
-                        prev_code = f.read()
-                except Exception:
-                    # If reading previous code fails, continue without it
-                    pass
-        
-        # If we have both previous and current code, show diff
-        if prev_code and current_code:
-            try:
-                current_lines = current_code.splitlines(keepends=True)
-                prev_lines = prev_code.splitlines(keepends=True)
-                diff = list(difflib.unified_diff(
-                    prev_lines,
-                    current_lines,
-                    fromfile=f"previous (iter {iteration - 1})",
-                    tofile=f"current (iter {iteration})",
-                    lineterm=""
-                ))
-                
-                if diff:
-                    # Show diff (skip first 2 lines which are headers)
-                    diff_text = "".join(diff[2:])  # Skip "---" and "+++" headers
-                    # Show full diff for learning (RL scripts are small, full context helps coder learn)
-                    diff_lines = diff_text.splitlines()
-                    if len(diff_lines) > 400:  # Generous limit for full visibility
-                        diff_text = "\n".join(diff_lines[:400]) + "\n... (diff truncated, showing first 400 of {} lines)".format(len(diff_lines))
-                    return f"Code changes (diff from previous iteration):\n{diff_text}"
-            except Exception:
-                # If diff generation fails, fall through to showing previous code
-                pass
-        
-        # If we have previous code but no current code (or diff failed), show previous code
-        if prev_code:
-            prev_lines = prev_code.splitlines()
-            # Show full context - RL scripts are small, coder benefits from seeing everything
-            if len(prev_lines) <= 500:  # Most RL scripts fit here
-                # Show full code - coder sees everything, learns better
-                return f"Previous iteration code (iter {iteration - 1}, {len(prev_lines)} lines):\n" + "\n".join(prev_lines)
-            else:
-                # For very long code, show generous context from start and end
-                first_part = "\n".join(prev_lines[:150])
-                last_part = "\n".join(prev_lines[-150:])
-                return f"Previous iteration code (iter {iteration - 1}, showing first 150 and last 150 of {len(prev_lines)} total lines):\n{first_part}\n... ({len(prev_lines) - 300} lines omitted) ...\n{last_part}"
-        
-        # If we have current code but no previous code, show FULL code
-        # (30B model has plenty of context, RL scripts are small)
-        if current_code:
-            lines = current_code.splitlines()
-            if len(lines) <= 500:  # Most RL scripts fit easily
-                # Show full code with line numbers for easy reference
-                numbered_lines = [f"{i+1:4d} | {line}" for i, line in enumerate(lines)]
-                return f"Current code ({len(lines)} lines - FULL):\n" + "\n".join(numbered_lines)
-            else:
-                # For very long code (rare), show generous context
-                first_part = [f"{i+1:4d} | {lines[i]}" for i in range(200)]
-                last_part = [f"{i+1:4d} | {lines[i]}" for i in range(len(lines)-200, len(lines))]
-                return f"Current code ({len(lines)} lines, showing first 200 + last 200):\n" + "\n".join(first_part) + f"\n... ({len(lines) - 400} lines omitted) ...\n" + "\n".join(last_part)
-        
-        # No code available (first iteration)
-        return ""
 
-    def _detect_and_fix_repetition(self, code: str) -> str:
+        # First iteration - no previous code
+        if iteration == 0 or not run_id:
+            return ""
+
+        # Try to load previous iteration's code
+        prev_code_path = f"output/{run_id}/code/agent_code_iter_{iteration - 1}.py"
+        if not os.path.exists(prev_code_path):
+            return ""
+
+        try:
+            with open(prev_code_path, "r", encoding="utf-8") as f:
+                prev_code = f.read()
+        except Exception:
+            return ""
+
+        if not prev_code.strip():
+            return ""
+
+        # Show previous code (coder will write new version based on task)
+        lines = prev_code.splitlines()
+        line_count = len(lines)
+
+        # For typical RL scripts (< 200 lines), show full code
+        if line_count <= 200:
+            return f"PREVIOUS CODE (iteration {iteration - 1}, {line_count} lines):\n{prev_code}"
+
+        # For longer code, show first and last parts
+        first_part = "\n".join(lines[:100])
+        last_part = "\n".join(lines[-100:])
+        return f"PREVIOUS CODE (iteration {iteration - 1}, {line_count} lines, showing first 100 + last 100):\n{first_part}\n\n... ({line_count - 200} lines omitted) ...\n\n{last_part}"
+
+    def _check_code_quality(self, code: str) -> str:
         """
-        Detect and handle repetition loops in generated code.
-        LLMs (especially local models) can get stuck repeating patterns.
+        Light diagnostics only - no auto-fixing.
+        Trust the model, let tester report actual errors.
         """
         lines = code.splitlines()
 
-        # Check 1: Too many import lines (normal script has ~10-30 imports max)
+        # Diagnostic warnings (no modifications)
         import_lines = [l for l in lines if l.strip().startswith(('import ', 'from '))]
-        if len(import_lines) > 50:
-            console.print(f"[yellow]⚠️  Detected repetition loop: {len(import_lines)} import lines (expected <50)[/yellow]")
-            # Deduplicate imports and keep unique ones
-            seen_imports = set()
-            unique_imports = []
-            for line in import_lines:
-                normalized = line.strip()
-                if normalized not in seen_imports:
-                    seen_imports.add(normalized)
-                    unique_imports.append(line)
+        if len(import_lines) > 40:
+            console.print(f"[yellow]⚠️  Note: {len(import_lines)} import lines (check if intentional)[/yellow]")
 
-            # Find where actual code starts (after imports)
-            code_start_idx = 0
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped and not stripped.startswith(('import ', 'from ', '#')):
-                    code_start_idx = i
-                    break
+        # Check for obvious repetition (same line 5+ times in a row)
+        prev_line = None
+        repeat_count = 0
+        max_repeat = 0
+        for line in lines:
+            if line == prev_line and line.strip():
+                repeat_count += 1
+                max_repeat = max(max_repeat, repeat_count)
+            else:
+                repeat_count = 0
+            prev_line = line
 
-            # Rebuild code with unique imports + rest
-            rest_of_code = lines[code_start_idx:] if code_start_idx < len(lines) else []
-            # Filter out any repeated imports from rest
-            rest_of_code = [l for l in rest_of_code if not l.strip().startswith(('import ', 'from '))]
+        if max_repeat >= 5:
+            console.print(f"[yellow]⚠️  Note: Detected {max_repeat}x repeated line (possible loop)[/yellow]")
 
-            console.print(f"[green]✓ Cleaned to {len(unique_imports)} unique imports[/green]")
-            code = '\n'.join(unique_imports + [''] + rest_of_code)
-            lines = code.splitlines()
-
-        # Check 2: Repeated consecutive lines (exact duplicates)
-        if len(lines) > 10:
-            cleaned_lines = []
-            prev_line = None
-            repeat_count = 0
-            for line in lines:
-                if line == prev_line and line.strip():  # Same non-empty line
-                    repeat_count += 1
-                    if repeat_count > 2:  # Allow max 2 repeats (e.g., blank lines)
-                        continue  # Skip this repeated line
-                else:
-                    repeat_count = 0
-                cleaned_lines.append(line)
-                prev_line = line
-
-            if len(cleaned_lines) < len(lines):
-                removed = len(lines) - len(cleaned_lines)
-                console.print(f"[yellow]⚠️  Removed {removed} consecutively repeated lines[/yellow]")
-                code = '\n'.join(cleaned_lines)
-                lines = cleaned_lines
-
-        # Check 3: Unicode corruption (non-ASCII in code that shouldn't have it)
-        # Thai, Chinese, etc. characters in import statements = corruption
-        import re
-        suspicious_unicode = re.search(r'[\u0e00-\u0e7f\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', code)
-        if suspicious_unicode:
-            console.print(f"[yellow]⚠️  Detected Unicode corruption in output, cleaning...[/yellow]")
-            # Remove lines with suspicious unicode in import/code (not in strings)
-            cleaned_lines = []
-            for line in lines:
-                # If line has suspicious unicode and it's not inside a string
-                if re.search(r'[\u0e00-\u0e7f\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', line):
-                    # Check if it's in a string (rough check)
-                    if '"' not in line and "'" not in line:
-                        console.print(f"[dim]  Removed corrupted line: {line[:60]}...[/dim]")
-                        continue
-                cleaned_lines.append(line)
-            code = '\n'.join(cleaned_lines)
-
+        # Return code unchanged - let Python/tester catch actual errors
         return code
 
     def __call__(self, state: dict) -> dict:
@@ -227,8 +140,8 @@ class Coder(BaseAgent):
             code = code[:-3].rstrip()
         code = code.strip()
 
-        # Detect repetition loops (common LLM failure mode)
-        code = self._detect_and_fix_repetition(code)
+        # Light diagnostics (no auto-fixing - trust the model)
+        code = self._check_code_quality(code)
 
         # Show generated code if enabled (visually formatted)
         if self.config.agents.show_coder_output:

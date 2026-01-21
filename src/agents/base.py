@@ -89,9 +89,9 @@ class BaseAgent:
                 print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
             # Use Ollama with specified model
-            # Coder gets token limit to prevent repetition loops
-            # Other agents get no limit (they produce shorter outputs)
-            coder_max_tokens = 6000 if agent_name == "coder" else None
+            # Coder gets reasonable token limit (typical RL script = 100-200 lines = ~2000 tokens)
+            # Too high limit causes repetition loops, too low truncates valid code
+            coder_max_tokens = 2500 if agent_name == "coder" else None
 
             self.llm = ChatOpenAI(
                 model=model_name,
