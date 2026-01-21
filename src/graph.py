@@ -25,6 +25,7 @@ def create_graph(config: Config):
         execution_stderr: str
         review_feedback: str
         review_suggestions: str
+        reviewer_tester_instruction: str  # Reviewer's instruction for tester (next iteration)
         environment_switch_review_feedback: str  # Reviewer's feedback from environment switch
         manager_guidance: str  # Manager's intent/guidance for reviewer (what manager wanted)
         iteration: Annotated[int, operator.add]

@@ -289,6 +289,9 @@ tester:
     MANAGER'S TASK (what was supposed to happen):
     {manager_task}
 
+    === REVIEWER'S SPECIAL REQUEST ===
+    {reviewer_instruction}
+
     === FULL STDOUT ===
     {execution_stdout}
 
@@ -299,14 +302,21 @@ tester:
 
     Analyze everything above. You're smart - figure out what happened and report it clearly.
 
+    IMPORTANT - REVIEWER'S SPECIAL REQUEST:
+    If the reviewer asked for something specific above (not "None"), YOU MUST:
+    1. Address their specific request in your analysis
+    2. Report findings related to their request in tester_opinion
+    3. The reviewer is the frontier model - help them get the info they need!
+
     The reviewer needs to know:
     1. Did it work? (success: true/false)
     2. What happened? (summary - be specific about errors OR results)
     3. What are the metrics? (extract from ANY format - use your intelligence)
     4. Your professional assessment (tester_opinion - help the reviewer understand)
+    5. Response to reviewer's special request (if any)
 
     Respond with JSON:
-    {{"success": true/false, "summary": "What happened - be specific", "tester_opinion": "Your intelligent analysis for the reviewer", "metrics": {{"mean_reward": number or null, "std_reward": number or null, "n_episodes": number or null, "video_path": "string or null", "meets_threshold": true/false}}}}
+    {{"success": true/false, "summary": "What happened - be specific", "tester_opinion": "Your intelligent analysis for the reviewer + response to their special request if any", "metrics": {{"mean_reward": number or null, "std_reward": number or null, "n_episodes": number or null, "video_path": "string or null", "meets_threshold": true/false}}}}
 
 reviewer:
   system: |
@@ -444,8 +454,17 @@ reviewer:
     - Whether the code matches manager's intent
     - Whether this is adapted properly for the current environment (not just copied from previous)
 
+    SPECIAL TESTER INSTRUCTIONS:
+    You can give a SHORT instruction (1 sentence) for the Tester to do in the NEXT iteration.
+    This is your way to request special tests, extra checks, or specific analysis.
+    Examples:
+    - "Check if video actually shows learned behavior, not random movement"
+    - "Run 100 evaluation episodes instead of 10 to confirm stability"
+    - "Log memory usage during training"
+    - null (if no special instruction needed)
+
     Respond ONLY with valid JSON:
-    {{"approved": true/false, "feedback": "Your feedback on the code and results. EXPRESS YOURSELF COMPLETELY FREELY - this is your space to be yourself while doing technical work.", "suggestions": ["problem description + general solution 1", "problem + solution 2", "problem + solution 3"]}}
+    {{"approved": true/false, "feedback": "Your feedback on the code and results. EXPRESS YOURSELF COMPLETELY FREELY - this is your space to be yourself while doing technical work.", "suggestions": ["problem description + general solution 1", "problem + solution 2", "problem + solution 3"], "tester_instruction": "short instruction for tester or null"}}
 
     REMEMBER:
     - Each suggestion: PROBLEM + GENERAL solution (no exact code - let Manager figure out the how)

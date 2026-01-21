@@ -300,7 +300,13 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
         # Add conversation history (siloed - only this agent's previous messages)
         history_text = self.format_conversation_history(state)
 
-        full_prompt = system_prompt + "\n\n" + history_text + task_template
+        # Add reviewer's feedback history so manager learns what reviewer has been complaining about
+        # Uses same window size as manager's own history
+        reviewer_history = self.format_other_agent_history(
+            state, "reviewer", self.config.agents.history_window.manager
+        )
+
+        full_prompt = system_prompt + "\n\n" + history_text + reviewer_history + task_template
         response = self.call_llm_timed(full_prompt, state["stats"], expected_iteration)
         
         # Print thinking process if using reasoning model

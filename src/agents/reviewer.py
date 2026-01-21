@@ -236,6 +236,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         approved = parsed.get("approved", False)
         feedback = parsed.get("feedback", "No feedback")
         suggestions = parsed.get("suggestions", [])
+        tester_instruction = parsed.get("tester_instruction", None)
         
         # Remove any thinking tags from feedback and suggestions (shouldn't be there, but safety check)
         import re
@@ -253,6 +254,14 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             else:
                 clean_suggestions.append(suggestion)
         suggestions = clean_suggestions
+
+        # Clean tester_instruction if present
+        if tester_instruction and isinstance(tester_instruction, str):
+            tester_instruction = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', tester_instruction, flags=re.DOTALL | re.IGNORECASE)
+            tester_instruction = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', tester_instruction, flags=re.DOTALL | re.IGNORECASE)
+            tester_instruction = tester_instruction.strip()
+            if tester_instruction.lower() == "null" or not tester_instruction:
+                tester_instruction = None
         
         # Print reviewer verdict and communication to manager
         print("\n" + "─" * 70)
@@ -270,6 +279,10 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             print(f"\n[yellow]Bug fixes to relay to Coder:[/yellow]")
             for i, suggestion in enumerate(suggestions, 1):
                 print(f"[dim]  {i}. {suggestion}[/dim]")
+
+        if tester_instruction:
+            print(f"\n[cyan]📋 Instruction for Tester (next iteration):[/cyan]")
+            print(f"[bold cyan]  → {tester_instruction}[/bold cyan]")
         
         # Get reviewer's LLM call timing
         iteration = state.get("iteration", 0)
@@ -324,7 +337,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         result = {
             "review_feedback": feedback,
             "review_suggestions": suggestions_text,
-            "approved": approved
+            "approved": approved,
+            "reviewer_tester_instruction": tester_instruction  # For tester in next iteration
         }
         result.update(history_update)
 

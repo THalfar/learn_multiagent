@@ -97,12 +97,10 @@ class BaseAgent:
                 model=model_name,
                 base_url=config.ollama.base_url,
                 api_key=config.ollama.api_key,
-                temperature=0,
+                temperature=0.1,  # Small temperature to avoid deterministic repetition loops
                 timeout=300.0,  # 5 minutes for generation (model already loaded)
                 max_retries=2,  # Retry on transient failures
                 max_tokens=coder_max_tokens,
-                frequency_penalty=0.3,  # Penalize token repetition (OpenAI-compatible)
-                presence_penalty=0.1,   # Penalize topic repetition
             )
             # Using Ollama - no log needed
         
@@ -415,6 +413,46 @@ class BaseAgent:
             console.print(f"[dim magenta]💾 Reviewer history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim magenta]")
 
         return "\n".join(history_lines)
+
+    def format_other_agent_history(self, state: dict, other_agent: str, window: int) -> str:
+        """
+        Get another agent's history. Useful for manager to see reviewer feedback.
+        """
+        if window == 0:
+            return ""
+
+        messages = state.get("conversation_history", [])
+        agent_messages = [msg for msg in messages if msg.get("agent") == other_agent]
+        recent_messages = agent_messages[-window:] if len(agent_messages) > window else agent_messages
+
+        if not recent_messages:
+            return ""
+
+        # Format compactly
+        history_lines = []
+        history_lines.append("=" * 70)
+        history_lines.append(f"{other_agent.upper()}'S RECENT FEEDBACK (last {len(recent_messages)}):")
+        history_lines.append("=" * 70)
+
+        for msg in recent_messages:
+            iteration = msg.get("iteration", "?")
+            content = msg.get("content", "")
+            # Truncate long content for other agent's history
+            if len(content) > 800:
+                content = content[:800] + "..."
+            history_lines.append(f"\n[Iter {iteration}] {content}")
+            history_lines.append("-" * 40)
+
+        history_lines.append("=" * 70)
+
+        total_text = "\n".join(history_lines)
+        tokens = self.estimate_tokens(total_text)
+
+        from rich.console import Console
+        console = Console()
+        console.print(f"[dim]📋 {other_agent.capitalize()} feedback history: {len(recent_messages)} msg, ~{tokens:,} tokens[/dim]")
+
+        return total_text
 
     def save_message_to_history(self, state: dict, content: str):
         """

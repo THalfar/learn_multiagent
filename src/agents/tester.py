@@ -403,12 +403,19 @@ class Tester(BaseAgent):
             success_threshold = current_env.success_threshold if current_env else (env_progression[0].success_threshold if env_progression else 0)
             
             prompt_dict = self.config.get_prompt("tester")
+
+            # Get reviewer's special instruction from previous iteration (if any)
+            reviewer_instruction = state.get("reviewer_tester_instruction", None)
+            if reviewer_instruction:
+                print(f"\n[cyan]📋 Reviewer's special request: {reviewer_instruction}[/cyan]\n")
+
             # Format template with all available context
             template_vars = {
                 "execution_stdout": stdout,
                 "execution_stderr": stderr,
                 "success_threshold": success_threshold,
-                "manager_task": state.get("current_task", "No task description available")
+                "manager_task": state.get("current_task", "No task description available"),
+                "reviewer_instruction": reviewer_instruction or "None - no special request from reviewer"
             }
             task_template = prompt_dict["task_template"].format(**template_vars)
 

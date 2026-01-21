@@ -51,15 +51,127 @@ class Coder(BaseAgent):
         last_part = "\n".join(lines[-100:])
         return f"PREVIOUS CODE (iteration {iteration - 1}, {line_count} lines, showing first 100 + last 100):\n{first_part}\n\n... ({line_count - 200} lines omitted) ...\n\n{last_part}"
 
+    def _print_code_summary(self, code: str, state: dict):
+        """
+        Print a quick visual summary of what coder produced.
+        Shows stats and a snippet so you can see 'what's happening at the lathe'.
+        """
+        import re
+        lines = code.splitlines()
+        line_count = len(lines)
+        iteration = state.get("iteration", 0)
+
+        # Count imports
+        import_lines = [l.strip() for l in lines if l.strip().startswith(('import ', 'from '))]
+        import_count = len(import_lines)
+
+        # Count functions and classes
+        func_count = len(re.findall(r'^def \w+', code, re.MULTILINE))
+        class_count = len(re.findall(r'^class \w+', code, re.MULTILINE))
+
+        # Detect algorithm
+        algo = "Unknown"
+        if 'PPO' in code:
+            algo = "PPO"
+        elif 'DQN' in code:
+            algo = "DQN"
+        elif 'A2C' in code:
+            algo = "A2C"
+        elif 'SAC' in code:
+            algo = "SAC"
+
+        # Detect training timesteps
+        timesteps_match = re.search(r'total_timesteps\s*=\s*(\d+)', code)
+        timesteps = timesteps_match.group(1) if timesteps_match else "?"
+
+        # Get first 3 imports for snippet
+        import_snippet = import_lines[:3] if import_lines else ["(no imports)"]
+
+        # Get key code snippet (first function or main block)
+        snippet_lines = []
+        in_main = False
+        for i, line in enumerate(lines):
+            if 'def ' in line or 'if __name__' in line or ('model' in line.lower() and '=' in line):
+                snippet_lines = lines[i:i+3]
+                break
+
+        # Build output
+        console.print("\n" + "─" * 70)
+        console.print(f"[bold cyan]🔧 CODER OUTPUT - Iteration {iteration}[/bold cyan]")
+        console.print("─" * 70)
+
+        # Stats line
+        stats_parts = [
+            f"[green]{line_count}[/green] lines",
+            f"[yellow]{import_count}[/yellow] imports",
+            f"[blue]{func_count}[/blue] funcs",
+        ]
+        if class_count > 0:
+            stats_parts.append(f"[magenta]{class_count}[/magenta] classes")
+        stats_parts.append(f"[cyan]{algo}[/cyan]")
+        if timesteps != "?":
+            stats_parts.append(f"[dim]{int(timesteps):,} steps[/dim]")
+
+        console.print("📊 " + " │ ".join(stats_parts))
+
+        # Import health indicator
+        if import_count <= 15:
+            health = "[green]✓ Clean[/green]"
+        elif import_count <= 25:
+            health = "[yellow]~ OK[/yellow]"
+        else:
+            health = "[red]⚠ Bloated[/red]"
+        console.print(f"📦 Imports: {health} ({', '.join(import_snippet[:2])}{'...' if len(import_lines) > 2 else ''})")
+
+        # Code snippet
+        if snippet_lines:
+            snippet_preview = snippet_lines[0][:60] + ('...' if len(snippet_lines[0]) > 60 else '')
+            console.print(f"[dim]📝 {snippet_preview}[/dim]")
+
+        console.print("─" * 70)
+
     def _check_code_quality(self, code: str) -> str:
         """
-        Light diagnostics only - no auto-fixing.
-        Trust the model, let tester report actual errors.
+        Check code quality and fix repetition loops.
+        Deduplicates imports if model got stuck in a repetition loop.
         """
         lines = code.splitlines()
 
-        # Diagnostic warnings (no modifications)
-        import_lines = [l for l in lines if l.strip().startswith(('import ', 'from '))]
+        # Count imports
+        import_lines = [l.strip() for l in lines if l.strip().startswith(('import ', 'from '))]
+        non_import_lines = [l for l in lines if l.strip() and not l.strip().startswith(('import ', 'from '))]
+
+        # Detect repetition loop: many imports but no actual code
+        if len(import_lines) > 30 and len(non_import_lines) < 5:
+            console.print(f"[red]⚠️  REPETITION LOOP DETECTED: {len(import_lines)} imports, {len(non_import_lines)} code lines[/red]")
+            console.print(f"[yellow]   Attempting to salvage by deduplicating imports...[/yellow]")
+
+            # Deduplicate imports while preserving order
+            seen_imports = set()
+            unique_imports = []
+            for imp in import_lines:
+                if imp not in seen_imports:
+                    seen_imports.add(imp)
+                    unique_imports.append(imp)
+
+            console.print(f"[green]   Reduced to {len(unique_imports)} unique imports[/green]")
+
+            # If we only have imports and no code, return a minimal error script
+            if len(non_import_lines) < 3:
+                console.print(f"[red]   ERROR: No actual code found after imports![/red]")
+                # Return a minimal script that will fail with a clear error
+                return "\n".join(unique_imports) + """
+
+# ERROR: Model repetition loop - no actual training code was generated
+# The model got stuck repeating imports and never wrote the training logic
+print("ERROR: Code generation failed - model produced only imports, no training code")
+raise RuntimeError("Repetition loop detected: model produced only imports")
+"""
+
+            # Reconstruct code with unique imports + remaining lines
+            return "\n".join(unique_imports) + "\n" + "\n".join(non_import_lines)
+
+        # Normal quality warnings
         if len(import_lines) > 40:
             console.print(f"[yellow]⚠️  Note: {len(import_lines)} import lines (check if intentional)[/yellow]")
 
@@ -82,10 +194,12 @@ class Coder(BaseAgent):
         return code
 
     def __call__(self, state: dict) -> dict:
-        # Coder is working
-        if not self.config.agents.show_coder_output:
-            # Only show simple message if not displaying code
-            print("[dim]Coder is generating code... (this may take a moment if loading models)[/dim]")
+        # Show what coder is working on
+        iteration = state.get("iteration", 0)
+        task = state.get("current_task", "")
+        task_preview = task[:80] + "..." if len(task) > 80 else task
+        console.print(f"\n[dim]🔧 Coder working on: {task_preview}[/dim]")
+
         prompt_dict = self.config.get_prompt("coder")
         
         # Normalize video_dir to absolute path (fixes Windows path issues)
@@ -142,6 +256,9 @@ class Coder(BaseAgent):
 
         # Light diagnostics (no auto-fixing - trust the model)
         code = self._check_code_quality(code)
+
+        # Always show a quick summary of what coder produced
+        self._print_code_summary(code, state)
 
         # Show generated code if enabled (visually formatted)
         if self.config.agents.show_coder_output:
