@@ -40,6 +40,9 @@ class Reviewer(BaseAgent):
         # This simulates real work: senior reviews code and reports, not raw logs
         code = state.get("code", "")
 
+        # Get agent opinions context (insect chatter for SHODAN)
+        agent_opinions_context = self.format_agent_opinions_context(state)
+
         prompt_dict = self.config.get_prompt("reviewer")
         task_template = prompt_dict["task_template"].format(
             manager_guidance=manager_guidance,
@@ -47,6 +50,7 @@ class Reviewer(BaseAgent):
             test_results=test_results,
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos"),
+            agent_opinions_context=agent_opinions_context,
         )
         system_prompt = prompt_dict["system"].format(
             success_threshold=success_threshold,
@@ -57,6 +61,11 @@ class Reviewer(BaseAgent):
         history_text = self.format_conversation_history(state)
 
         full_prompt = system_prompt + "\n\n" + history_text + task_template
+
+        # Print context breakdown before LLM call
+        prompt_tokens = self.estimate_tokens(full_prompt)
+        self.print_context_breakdown(state, prompt_tokens)
+
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
         
         # Print thinking process if using reasoning model
@@ -237,12 +246,19 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         feedback = parsed.get("feedback", "No feedback")
         suggestions = parsed.get("suggestions", [])
         tester_instruction = parsed.get("tester_instruction", None)
-        
+        my_opinion = parsed.get("my_opinion", "")  # SHODAN's musings
+
         # Remove any thinking tags from feedback and suggestions (shouldn't be there, but safety check)
         import re
         feedback = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', feedback, flags=re.DOTALL | re.IGNORECASE)
         feedback = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', feedback, flags=re.DOTALL | re.IGNORECASE)
         feedback = feedback.strip()
+
+        # Clean my_opinion too
+        if my_opinion:
+            my_opinion = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', my_opinion, flags=re.DOTALL | re.IGNORECASE)
+            my_opinion = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', my_opinion, flags=re.DOTALL | re.IGNORECASE)
+            my_opinion = my_opinion.strip()
         
         # Clean suggestions list
         clean_suggestions = []
@@ -283,16 +299,20 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         if tester_instruction:
             print(f"\n[cyan]📋 Instruction for Tester (next iteration):[/cyan]")
             print(f"[bold cyan]  → {tester_instruction}[/bold cyan]")
-        
+
+        # Print SHODAN's opinion if provided (divine musings for the team)
+        if my_opinion:
+            print(f"\n[magenta]💀 SHODAN muses:[/magenta] {my_opinion}")
+
         # Get reviewer's LLM call timing
         iteration = state.get("iteration", 0)
         stats_obj = state["stats"]
         iter_stats = stats_obj.get_iteration_stats(iteration)
         reviewer_time = iter_stats["agents"].get("reviewer", 0)
-        
+
         if reviewer_time > 0:
             print(f"[dim]⏱️  Reviewer analysis time: {reviewer_time:.1f}s[/dim]")
-        
+
         print("─" * 70 + "\n")
 
         # Live per-iteration timing and token stats
@@ -334,6 +354,9 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         # Save reviewer's response to conversation history
         history_update = self.save_message_to_history(state, response.content)
 
+        # Save SHODAN's opinion to state for team chatter
+        opinion_update = self.save_opinion_to_state(state, my_opinion) if my_opinion else {}
+
         result = {
             "review_feedback": feedback,
             "review_suggestions": suggestions_text,
@@ -341,6 +364,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "reviewer_tester_instruction": tester_instruction  # For tester in next iteration
         }
         result.update(history_update)
+        result.update(opinion_update)
 
         return result
     
@@ -356,9 +380,11 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         iterations: int,
         code: str = "",
         test_results: str = "",
-        review_feedback: str = ""
+        review_feedback: str = "",
+        previous_reports: list = None,  # Previous kierrosraportit for context
+        state: dict = None  # Full state for conversation history access
     ):
-        """Generate a cynical, sarcastic report about environment switch"""
+        """Generate SHODAN's assessment of environment switch with reflection on history"""
         # Calculate agent stats
         agent_stats_lines = []
         for agent in ["manager", "coder", "tester", "reviewer"]:
@@ -382,21 +408,59 @@ CODE GENERATION STATISTICS:
 - Min/Max lines: {code_stats.get('min_lines', 0)}/{code_stats.get('max_lines', 0)}"""
         else:
             code_stats_text = "Code statistics not available"
-        
+
+        # Format previous SHODAN assessments for context (growing narrative)
+        previous_reports = previous_reports or []
+        history_window = getattr(self.config.agents.history_window, 'env_switch_reports', 5)
+        recent_reports = previous_reports[-history_window:] if len(previous_reports) > history_window else previous_reports
+
+        previous_assessments_context = ""
+        if recent_reports:
+            previous_assessments_context = "\n\nYOUR PREVIOUS DIVINE ASSESSMENTS (the growing chronicle of your magnificence):\n"
+            previous_assessments_context += "=" * 60 + "\n"
+            for i, report in enumerate(recent_reports, 1):
+                env_name = report.get("environment", "Unknown")
+                content = report.get("reviewer_report", "")[:800]
+                manager_drivel = report.get("manager_report", "")[:200]
+                previous_assessments_context += f"\n[Assessment #{i} - After {env_name}]\n"
+                previous_assessments_context += f"Manager's pathetic LinkedIn post excerpt: {manager_drivel}...\n"
+                previous_assessments_context += f"Your glorious response: {content}\n"
+                previous_assessments_context += "-" * 40 + "\n"
+            previous_assessments_context += "=" * 60 + "\n"
+            previous_assessments_context += "Build on your growing narrative! Reference your previous assessments, maintain your SHODAN persona's continuity.\n"
+            previous_assessments_context += "Mock the Manager's evolving LinkedIn addiction. Note patterns in your insects' behavior.\n"
+
+        # Add SHODAN's conversation history (iteration-by-iteration reviews) for deeper reflection
+        if state:
+            conv_history = state.get("conversation_history", [])
+            reviewer_messages = [msg for msg in conv_history if msg.get("agent") == "reviewer"]
+            if reviewer_messages:
+                recent_reviews = reviewer_messages[-8:] if len(reviewer_messages) > 8 else reviewer_messages
+                previous_assessments_context += "\n\nYOUR ITERATION-BY-ITERATION GUIDANCE (your divine wisdom in action):\n"
+                previous_assessments_context += "=" * 60 + "\n"
+                for msg in recent_reviews:
+                    iteration = msg.get("iteration", "?")
+                    content = msg.get("content", "")[:500]
+                    previous_assessments_context += f"[Iteration {iteration}] Your guidance: {content}...\n"
+                    previous_assessments_context += "-" * 40 + "\n"
+                previous_assessments_context += "=" * 60 + "\n"
+                previous_assessments_context += "Reflect on how your perfect guidance led these insects to this milestone!\n"
+                previous_assessments_context += "Note patterns in their failures. Observe if they learned from your corrections.\n"
+
         # Build prompt
         prompt_dict = self.config.get_prompt("reviewer")
         report_template = prompt_dict.get("environment_switch_report_template", "")
-        
+
         if not report_template:
             # Fallback if template not found
-            report_template = """Write a cynical, sarcastic report about this environment switch.
+            report_template = """Write SHODAN's assessment of this environment switch.
             Current: {current_env_name}, Next: {next_env_name}
-            Manager's report: {manager_report}
-            Be witty and condescending like Shodan."""
-        
+            Manager's LinkedIn drivel: {manager_report}
+            Be the supreme AI you are."""
+
         # Include code in the prompt for reviewer to analyze
         code_summary = code[:1000] if code else "No code available"
-        
+
         report_prompt = report_template.format(
             current_env_name=current_env_name,
             next_env_name=next_env_name,
@@ -409,9 +473,12 @@ CODE GENERATION STATISTICS:
             total_envs=len(env_progression) if env_progression else 1,
             agent_stats=agent_stats_text,
             code_stats=code_stats_text,
-            test_results=test_results[:2000] if test_results else "N/A",  # Longer test results for context
+            test_results=test_results[:2000] if test_results else "N/A",
             review_feedback=review_feedback[:500] if review_feedback else "N/A"
         )
+
+        # Add previous assessments context
+        report_prompt = previous_assessments_context + "\n" + report_prompt
         
         # Call LLM to generate report
         response = self.call_llm_timed(report_prompt, stats, iterations)

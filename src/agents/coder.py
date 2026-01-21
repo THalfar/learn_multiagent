@@ -225,6 +225,11 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         history_text = self.format_conversation_history(state)
 
         full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section
+
+        # Print context breakdown before LLM call
+        prompt_tokens = self.estimate_tokens(full_prompt)
+        self.print_context_breakdown(state, prompt_tokens)
+
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
         
         # Print thinking process if using reasoning model (but no other output)

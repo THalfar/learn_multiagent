@@ -47,7 +47,13 @@ def run_in_container(code_path: str, output_dir: str, timeout: int) -> subproces
         "python", "/workspace/agent_script.py"
     ]
 
-    print(f"[dim]Running in Docker container ({DOCKER_IMAGE})...[/dim]")
+    # Fun Docker status messages
+    print(f"[dim cyan]🐳 Docker sandbox initializing...[/dim cyan]")
+    print(f"[dim]   Image: {DOCKER_IMAGE}[/dim]")
+    print(f"[dim]   Memory limit: 8GB | CPUs: 10 threads[/dim]")
+    print(f"[dim]   Network: disabled (sandboxed)[/dim]")
+    print(f"[dim]   Timeout: {timeout}s ({timeout//60}m {timeout%60}s)[/dim]")
+    print(f"[dim cyan]🚀 Launching container...[/dim cyan]")
 
     return subprocess.run(
         cmd,
@@ -219,8 +225,7 @@ class Tester(BaseAgent):
         super().__init__(config, "tester")
 
     def __call__(self, state: dict) -> dict:
-        from src.utils.banners import print_agent_transition
-        print_agent_transition("coder", "tester")
+        # NOTE: No transition banner here - coder doesn't have opinions so nothing to show
         code = state.get("code", "")
 
         # Remove invalid 'timeout' argument from model.learn() call in generated code
@@ -244,12 +249,6 @@ class Tester(BaseAgent):
                 "execution_stderr": "Dangerous code detected, execution blocked"
             }
 
-        print("\n" + "─" * 70)
-        print("[bold yellow]TESTER: Executing code...[/bold yellow]")
-        print("─" * 70)
-        print("[dim]Note: Tester does not see the code, only execution outputs[/dim]")
-        print("─" * 70 + "\n")
-        
         # Get execution timeout from current environment
         env_progression = self.config.environment_progression
         current_env_index = state.get("current_env_index", 0)
@@ -267,6 +266,16 @@ class Tester(BaseAgent):
         os.makedirs(code_dir, exist_ok=True)
         os.makedirs(video_dir, exist_ok=True)
         code_path = f"{code_dir}/agent_code_iter_{state.get('iteration', 0)}.py"
+
+        print("\n" + "─" * 70)
+        print("[bold yellow]🧪 TESTER: Preparing Execution...[/bold yellow]")
+        print("─" * 70)
+        print("[dim]📝 Writing code to sandbox...[/dim]")
+        print(f"[dim]   Code file: {code_path}[/dim]")
+        print(f"[dim]   Video output: {video_dir}[/dim]")
+        print(f"[dim]   Timeout: {execution_timeout}s[/dim]")
+        print("[dim]🔒 Tester cannot see code - only execution results[/dim]")
+        print("─" * 70 + "\n")
 
         with open(code_path, "w", encoding="utf-8") as f:
             f.write(code)
@@ -302,21 +311,26 @@ class Tester(BaseAgent):
             # Add video check information to output
             video_check_output = []
             video_check_output.append("\n" + "─" * 70)
-            video_check_output.append("[bold cyan]VIDEO FILE CHECK[/bold cyan]")
+            video_check_output.append("[bold cyan]🎬 VIDEO FILE CHECK[/bold cyan]")
             video_check_output.append("─" * 70)
+            video_check_output.append(f"[dim]Scanning: {video_dir}[/dim]")
             
             if video_check["error"]:
-                video_check_output.append(f"[red]Error: {video_check['error']}[/red]")
+                video_check_output.append(f"[red]❌ Error: {video_check['error']}[/red]")
             elif not video_check["exists"]:
-                video_check_output.append(f"[red]Video directory does not exist: {video_dir}[/red]")
+                video_check_output.append(f"[red]📁 Video directory does not exist: {video_dir}[/red]")
+                video_check_output.append(f"[dim]   (Coder needs to add RecordVideo wrapper)[/dim]")
             elif not video_check["video_files"]:
-                video_check_output.append(f"[yellow]No video files found in {video_dir}[/yellow]")
+                video_check_output.append(f"[yellow]🔍 No video files found in {video_dir}[/yellow]")
+                video_check_output.append(f"[dim]   (Training ran but no video recorded)[/dim]")
             else:
-                video_check_output.append(f"[green]Found {len(video_check['video_files'])} video file(s)[/green]")
-                video_check_output.append(f"[dim]Total size: {video_check['total_size'] / (1024*1024):.2f} MB[/dim]")
-                video_check_output.append(f"[green]Valid videos: {video_check['valid_videos']}[/green]")
+                video_check_output.append(f"[green]🎥 Found {len(video_check['video_files'])} video file(s)![/green]")
+                video_check_output.append(f"[dim]   Total size: {video_check['total_size'] / (1024*1024):.2f} MB[/dim]")
+                video_check_output.append(f"[green]   ✓ Valid videos: {video_check['valid_videos']}[/green]")
                 if video_check["empty_videos"] > 0:
-                    video_check_output.append(f"[red]Empty/corrupted videos: {video_check['empty_videos']}[/red]")
+                    video_check_output.append(f"[red]   ✗ Empty/corrupted: {video_check['empty_videos']}[/red]")
+                if video_check['valid_videos'] > 0:
+                    video_check_output.append(f"[dim cyan]   🎬 Agent behavior captured on film![/dim cyan]")
                 
                 # Show details of first few videos
                 for i, vf in enumerate(video_check["video_files"][:5]):
@@ -361,24 +375,36 @@ class Tester(BaseAgent):
             # Show execution statistics
             if execution_failed:
                 print("\n" + "─" * 70)
-                print("[bold red]EXECUTION FAILED[/bold red]")
+                print("[bold red]❌ EXECUTION FAILED[/bold red]")
                 print("─" * 70)
                 print(f"[red]Return code: {result.returncode}[/red]")
+                print(f"[dim]Container terminated with error[/dim]")
                 # Show brief error preview
                 error_preview = (result.stderr[:300] or result.stdout[:300]).strip()
                 if error_preview:
                     print(f"[dim]Error preview: {error_preview}...[/dim]")
             else:
                 print("\n" + "─" * 70)
-                print("[bold yellow]EXECUTION COMPLETE[/bold yellow]")
+                print("[bold green]✅ EXECUTION COMPLETE[/bold green]")
                 print("─" * 70)
+                print(f"[dim]Container exited successfully (code 0)[/dim]")
             
             minutes = int(execution_duration // 60)
             seconds = int(execution_duration % 60)
             if minutes > 0:
-                print(f"[green]Execution time: {minutes}m {seconds}s ({execution_duration:.1f}s total)[/green]")
+                print(f"[green]⏱️  Execution time: {minutes}m {seconds}s ({execution_duration:.1f}s total)[/green]")
             else:
-                print(f"[green]Execution time: {seconds}s ({execution_duration:.1f}s total)[/green]")
+                print(f"[green]⏱️  Execution time: {seconds}s ({execution_duration:.1f}s total)[/green]")
+
+            # Fun performance commentary
+            if execution_duration < 30:
+                print(f"[dim cyan]   ⚡ Lightning fast! The coder's algorithm is efficient.[/dim cyan]")
+            elif execution_duration < 120:
+                print(f"[dim cyan]   🏃 Good pace! Training is progressing well.[/dim cyan]")
+            elif execution_duration < 300:
+                print(f"[dim cyan]   🐢 Taking its time... complex environment perhaps?[/dim cyan]")
+            else:
+                print(f"[dim cyan]   🦥 Long training session! Hope the rewards are worth it.[/dim cyan]")
             
             # Try to extract training timesteps from output if available
             timesteps_match = re.search(r'total_timesteps[:\s]*(\d+)', stdout, re.IGNORECASE)
@@ -394,7 +420,9 @@ class Tester(BaseAgent):
             print("─" * 70 + "\n")
 
             # LLM tester analysis - let LLM analyze all outputs (including errors)
-            print("[dim]Analyzing execution results...[/dim]\n")
+            print("[dim cyan]🤖 Tester LLM analyzing execution results...[/dim cyan]")
+            print(f"[dim]   Model: {self.model_name}[/dim]")
+            print(f"[dim]   Processing stdout ({len(stdout):,} chars) + stderr ({len(result.stderr):,} chars)[/dim]\n")
             
             # Get success threshold from current environment (execution_timeout already retrieved earlier)
             env_progression = self.config.environment_progression
@@ -409,20 +437,28 @@ class Tester(BaseAgent):
             if reviewer_instruction:
                 print(f"\n[cyan]📋 Reviewer's special request: {reviewer_instruction}[/cyan]\n")
 
+            # Get agent opinions context (team chatter)
+            agent_opinions_context = self.format_agent_opinions_context(state)
+
             # Format template with all available context
             template_vars = {
                 "execution_stdout": stdout,
                 "execution_stderr": stderr,
                 "success_threshold": success_threshold,
                 "manager_task": state.get("current_task", "No task description available"),
-                "reviewer_instruction": reviewer_instruction or "None - no special request from reviewer"
+                "reviewer_instruction": reviewer_instruction or "None - no special request from reviewer",
+                "agent_opinions_context": agent_opinions_context,
             }
             task_template = prompt_dict["task_template"].format(**template_vars)
 
             # Add conversation history (siloed - only this agent's previous messages)
             history_text = self.format_conversation_history(state)
 
-            full_prompt = prompt_dict["system"] + "\\n\\n" + history_text + task_template
+            full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template
+
+            # Print context breakdown before LLM call
+            prompt_tokens = self.estimate_tokens(full_prompt)
+            self.print_context_breakdown(state, prompt_tokens)
 
             response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
             
@@ -461,7 +497,8 @@ class Tester(BaseAgent):
                 tester_opinion = parsed.get("tester_opinion", "")
                 success = parsed.get("success", None)
                 metrics = parsed.get("metrics", {})
-                
+                my_opinion = parsed.get("my_opinion", "")  # Tester's personal take
+
                 # Analysis output - this is the tester's report to reviewer
                 print("\n" + "─" * 70)
                 print("[bold yellow]TESTER → REVIEWER[/bold yellow]")
@@ -481,7 +518,7 @@ class Tester(BaseAgent):
                         current_env_index = state.get("current_env_index", 0)
                         current_env = env_progression[current_env_index] if env_progression and current_env_index < len(env_progression) else None
                         success_threshold = current_env.success_threshold if current_env else (env_progression[0].success_threshold if env_progression else 0)
-                        
+
                         if threshold:
                             print(f"[bold green]Mean Reward: {mean} (threshold: {success_threshold}) ✓[/bold green]")
                         else:
@@ -492,6 +529,11 @@ class Tester(BaseAgent):
                         print(f"[dim]Episodes: {metrics.get('n_episodes')}[/dim]")
                 if tester_opinion:
                     print(f"\n[yellow]Assessment:[/yellow] {tester_opinion}")
+
+                # Print tester's opinion if provided (team chatter)
+                if my_opinion:
+                    print(f"\n[yellow]💬 Tester's take:[/yellow] {my_opinion}")
+
                 print("─" * 70 + "\n")
                 
                 # Combine summary and opinion for reviewer
@@ -522,22 +564,29 @@ class Tester(BaseAgent):
             # Save tester's response to conversation history
             history_update = self.save_message_to_history(state, response.content)
 
-            result = {
+            # Save tester's opinion to state for team chatter
+            opinion_update = self.save_opinion_to_state(state, my_opinion) if my_opinion else {}
+
+            result_dict = {
                 "test_results": test_results,
                 "execution_stdout": stdout,
                 "execution_stderr": result.stderr
             }
-            result.update(history_update)
+            result_dict.update(history_update)
+            result_dict.update(opinion_update)
 
-            return result
+            return result_dict
 
         except subprocess.TimeoutExpired:
             timeout_minutes = execution_timeout // 60
             timeout_seconds = execution_timeout % 60
             timeout_str = f"{timeout_minutes}m {timeout_seconds}s" if timeout_minutes > 0 else f"{timeout_seconds}s"
-            
+
             print("\n" + "─" * 70)
-            print(f"[bold red]TIMEOUT: Execution exceeded {timeout_str} ({execution_timeout}s)[/bold red]")
+            print(f"[bold red]⏰ TIMEOUT: Execution exceeded {timeout_str} ({execution_timeout}s)[/bold red]")
+            print("─" * 70)
+            print(f"[dim red]🐳 Docker container forcibly terminated[/dim red]")
+            print(f"[dim]   The training took too long - try fewer timesteps or simpler approach[/dim]")
             print("─" * 70 + "\n")
             
             # Log to conversation file
@@ -558,7 +607,10 @@ class Tester(BaseAgent):
             }
         except Exception as e:
             print("\n" + "─" * 70)
-            print(f"[bold red]ERROR: {e}[/bold red]")
+            print(f"[bold red]💥 UNEXPECTED ERROR[/bold red]")
+            print("─" * 70)
+            print(f"[red]{type(e).__name__}: {e}[/red]")
+            print(f"[dim]   Something went wrong outside the sandbox[/dim]")
             print("─" * 70 + "\n")
             
             # Log to conversation file

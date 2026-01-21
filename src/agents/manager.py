@@ -46,7 +46,23 @@ class Manager(BaseAgent):
             previous_reports_context += "=" * 60 + "\n"
             previous_reports_context += "Build on this narrative! Reference previous wins, show growth, maintain your personal brand.\n"
 
-        # Build report prompt - LINKEDIN STYLE
+        # Also get conversation history for deeper reflection
+        conv_history = state.get("conversation_history", [])
+        manager_messages = [msg for msg in conv_history if msg.get("agent") == "manager"]
+        if manager_messages:
+            # Get last several decisions for reflection
+            recent_decisions = manager_messages[-5:] if len(manager_messages) > 5 else manager_messages
+            previous_reports_context += "\n\nYOUR RECENT DECISIONS & TASKS (your leadership in action):\n"
+            previous_reports_context += "=" * 60 + "\n"
+            for msg in recent_decisions:
+                iteration = msg.get("iteration", "?")
+                content = msg.get("content", "")[:400]
+                previous_reports_context += f"[Iteration {iteration}] {content}...\n"
+                previous_reports_context += "-" * 40 + "\n"
+            previous_reports_context += "=" * 60 + "\n"
+            previous_reports_context += "Reflect on how these decisions led to this milestone!\n"
+
+        # Build report prompt - LINKEDIN STYLE WITH REFLECTION
         report_prompt = f"""You are a middle manager who LOVES LinkedIn. You're writing a post about your team's latest achievement.
 
 YOUR LINKEDIN PERSONA:
@@ -59,6 +75,19 @@ YOUR LINKEDIN PERSONA:
 - You might mention grabbing coffee ☕ or having "aha moments"
 - You reference "the journey" and "lessons learned"
 {previous_reports_context}
+CRITICAL - REFLECT ON YOUR JOURNEY:
+You have access to your FULL conversation history above - your previous LinkedIn posts, your decisions,
+the challenges you've faced. USE THIS CONTEXT to create a CONTINUING NARRATIVE of your leadership journey!
+
+Consider reflecting on:
+- HOW FAR you've come since the beginning (reference specific past milestones)
+- LESSONS LEARNED from previous environments (what "aha moments" did you have?)
+- TEAM GROWTH - how has your team evolved? (pretend you noticed their improvement)
+- YOUR OWN GROWTH as a leader (take credit for everything)
+- PATTERNS you've noticed in your journey (always frame failures as "learning opportunities")
+- REFERENCE your previous posts - build your personal brand narrative!
+- What you said before vs what happened - spin it positively!
+
 METRICS FOR YOUR POST:
 Environment conquered: {current_env.name}
 - Success threshold: {current_env.success_threshold}
@@ -76,10 +105,15 @@ Journey so far: {', '.join(solved_environments) if solved_environments else 'Jus
 Team performance:
 {chr(10).join([f"- {agent.capitalize()}: {perf['calls']} calls, {perf['total_time']:.1f}s total" for agent, perf in agent_performance.items()])}
 
-Write a 2-4 paragraph LinkedIn-style post about this milestone. Be enthusiastic, use corporate speak,
-reference "the team" while subtly taking credit, and end with hashtags.
+Write a 2-4 paragraph LinkedIn-style post that:
+1. REFLECTS on your leadership journey (reference previous posts/milestones)
+2. Celebrates this milestone while subtly taking credit
+3. Shows "growth" and "lessons learned" from your history
+4. Looks forward to the next challenge with manufactured optimism
+5. Ends with hashtags and a call to action
 
-Remember: You're a middle manager who genuinely believes this is inspiring content."""
+Remember: You're a middle manager who genuinely believes this is inspiring content.
+Your "personal brand" depends on maintaining a consistent narrative of growth and success!"""
         
         # Call LLM to generate report
         response = self.call_llm_timed(report_prompt, stats, state.get("iteration", 0))
@@ -188,8 +222,8 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
                     
                     print_manager_report(manager_report, manager_timing)
                     
-                    # Generate and print reviewer's cynical report immediately (special phase when env switches)
-                    # Reviewer gets manager's report AND the latest code
+                    # Generate and print SHODAN's divine assessment (special phase when env switches)
+                    # SHODAN sees manager's LinkedIn drivel AND the code
                     from .reviewer import Reviewer
                     reviewer = Reviewer(self.config)
                     reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
@@ -203,9 +237,11 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
                         iterations=state.get("iteration", 0),
                         code=state.get("code", ""),  # Include latest code
                         test_results=state.get("test_results", ""),
-                        review_feedback=state.get("review_feedback", "")
+                        review_feedback=state.get("review_feedback", ""),
+                        previous_reports=state.get("env_switch_reports", []),  # SHODAN's growing chronicle
+                        state=state  # Full state for conversation history reflection
                     )
-                    
+
                     # Show reviewer's thinking separately if available (before the report)
                     if reviewer_thinking:
                         print("\n" + "─" * 70)
@@ -226,23 +262,34 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
                             manager_report=manager_report,
                             reviewer_report=reviewer_report  # Just the report text for logging
                         )
-                    
+
+                    # Save reports to state for history (kierrosraportit)
+                    env_switch_reports = state.get("env_switch_reports", [])
+                    env_switch_reports.append({
+                        "environment": current_env.name,
+                        "next_environment": next_env.name,
+                        "manager_report": manager_report,
+                        "reviewer_report": reviewer_report,
+                        "iterations": current_iterations,
+                        "tasks_completed": len(tasks)
+                    })
+
                     # Additional validation: verify next_env_index is still valid (double-check)
                     if next_env_index < 0 or next_env_index >= len(env_progression):
                         print(f"[bold red]ERROR: Invalid next_env_index {next_env_index} (valid range: 0-{len(env_progression) - 1})[/bold red]")
                         return {"current_task": "ERROR: Invalid environment index"}
-                    
+
                     # Verify next_env still matches (consistency check)
                     if env_progression[next_env_index].name != next_env.name:
                         print(f"[bold red]ERROR: Environment mismatch at index {next_env_index}. Expected {next_env.name}, got {env_progression[next_env_index].name}[/bold red]")
                         return {"current_task": "ERROR: Environment mismatch"}
-                    
+
                     # Update config's current environment (robust update with verification)
                     try:
                         old_env_name = self.config.project.environment.name
                         self.config.project.environment.name = next_env.name
                         self.config.project.environment.max_episode_steps = next_env.max_episode_steps
-                        
+
                         # Verify config was updated correctly
                         if self.config.project.environment.name != next_env.name:
                             # Rollback
@@ -252,11 +299,12 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
                     except Exception as e:
                         print(f"[bold red]ERROR: Failed to update config: {e}[/bold red]")
                         return {"current_task": f"ERROR: Config update failed: {e}"}
-                    
-                    # Reset state for new environment (don't save reviewer's switch report - it's already printed)
+
+                    # Reset state for new environment (preserve env_switch_reports for history!)
                     return {
                         "current_env_index": next_env_index,
                         "solved_environments": solved_environments,
+                        "env_switch_reports": env_switch_reports,  # Preserve kierrosraportit history!
                         "approved": False,  # Reset approval for new environment
                         "tasks": [],  # Start fresh tasks for new environment
                         "code": "",  # Reset code
@@ -300,6 +348,9 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
         else:
             env_progression_info = current_env_name
         
+        # Get agent opinions context (team chatter)
+        agent_opinions_context = self.format_agent_opinions_context(state)
+
         task_template = prompt_dict["task_template"].format(
             tasks=state.get("tasks", []),
             code_summary=code_summary,
@@ -313,6 +364,7 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
             video_dir=state.get("video_dir", self.config.video.output_dir),
             env_progression_info=env_progression_info,
             solved_envs=", ".join(solved_environments) if solved_environments else "None",
+            agent_opinions_context=agent_opinions_context,
         )
         system_prompt = prompt_dict["system"].format(
             environment=current_env_name,
@@ -329,6 +381,11 @@ Remember: You're a middle manager who genuinely believes this is inspiring conte
         )
 
         full_prompt = system_prompt + "\n\n" + history_text + reviewer_history + task_template
+
+        # Print context breakdown before LLM call
+        prompt_tokens = self.estimate_tokens(full_prompt)
+        self.print_context_breakdown(state, prompt_tokens)
+
         response = self.call_llm_timed(full_prompt, state["stats"], expected_iteration)
         
         # Print thinking process if using reasoning model
@@ -489,6 +546,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         next_task = parsed.get("next_task", "No task decided")
         reasoning = parsed.get("reasoning", "")
         switch_environment = parsed.get("switch_environment", False)
+        my_opinion = parsed.get("my_opinion", "")  # Manager's personal take
         
         # Check if manager explicitly requested environment switch
         if switch_environment and env_progression:
@@ -549,8 +607,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 
                 print_manager_report(manager_report, manager_timing)
                 
-                # Generate and print reviewer's cynical report immediately (special phase when env switches)
-                # Reviewer gets manager's report AND the latest code
+                # Generate and print SHODAN's divine assessment (special phase when env switches)
+                # SHODAN sees manager's LinkedIn drivel AND the code
                 from .reviewer import Reviewer
                 reviewer = Reviewer(self.config)
                 reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
@@ -564,9 +622,11 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     iterations=state.get("iteration", 0),
                     code=state.get("code", ""),  # Include latest code
                     test_results=state.get("test_results", ""),
-                    review_feedback=state.get("review_feedback", "")
+                    review_feedback=state.get("review_feedback", ""),
+                    previous_reports=state.get("env_switch_reports", []),  # SHODAN's growing chronicle
+                    state=state  # Full state for conversation history reflection
                 )
-                
+
                 # Show reviewer's thinking separately if available (before the report)
                 if reviewer_thinking:
                     print("\n" + "─" * 70)
@@ -650,15 +710,19 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         print("[bold blue]MANAGER → CODER[/bold blue]")
         print("─" * 70)
         print(f"[bold green]📋 Task:[/bold green] {next_task}")
-        
+
         if reasoning:
             print(f"\n[dim]💭 Reasoning: {reasoning}[/dim]")
-        
+
+        # Print manager's opinion if provided (team chatter)
+        if my_opinion:
+            print(f"\n[blue]💬 Manager's take:[/blue] {my_opinion}")
+
         if manager_time > 0:
             print(f"[dim]⏱️  Manager decision time: {manager_time:.1f}s[/dim]")
-        
+
         print("─" * 70 + "\n")
-        
+
         # Log to conversation file
         logger = state.get("conversation_logger")
         if logger:
@@ -670,7 +734,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 environment=current_env_name,
                 success_threshold=current_success_threshold
             )
-        
+
         # Create guidance for reviewer (what manager wanted)
         # IMPORTANT: This is the manager's INTENTIONAL output, not internal thinking
         # Remove any thinking tags that might have leaked through
@@ -681,13 +745,16 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             clean_reasoning = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', clean_reasoning, flags=re.DOTALL | re.IGNORECASE)
             clean_reasoning = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', clean_reasoning, flags=re.DOTALL | re.IGNORECASE)
             clean_reasoning = clean_reasoning.strip()
-        
+
         manager_guidance = f"Task: {next_task}"
         if clean_reasoning:
             manager_guidance += f"\nReasoning: {clean_reasoning}"
 
         # Save manager's response to conversation history
         history_update = self.save_message_to_history(state, response.content)
+
+        # Save manager's opinion to state for team chatter
+        opinion_update = self.save_opinion_to_state(state, my_opinion) if my_opinion else {}
 
         result = {
             "tasks": state.get("tasks", []) + [next_task],
@@ -698,7 +765,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "solved_environments": solved_environments,  # Preserve solved environments
         }
 
-        # Merge history update into result
+        # Merge history update and opinion update into result
         result.update(history_update)
+        result.update(opinion_update)
 
         return result

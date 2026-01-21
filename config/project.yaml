@@ -61,6 +61,17 @@ agents:
     tester: 5      # Tester remembers recent testing patterns
     reviewer: 15   # Reviewer has longest memory to maintain guidance consistency
     env_switch_reports: 5  # How many previous "kierrosraportit" (environment completion reports) to include in context
+    agent_opinions: 8  # How many previous agent opinions/comments to show (enables cross-agent "dialogue")
+
+  # Agent opinions - enables inter-agent commentary and "dialogue"
+  # When true, agents share their personal take on the situation
+  # Creates evolving narrative as opinions chain through: Manager → Tester → Reviewer → Manager...
+  agent_opinions:
+    enabled: true  # Master switch for agent opinions feature
+    manager: true  # Manager shares opinion on team dynamics and strategy
+    coder: false   # Coder stays focused on code only (no opinions)
+    tester: true   # Tester shares opinion on code quality and testing experience
+    reviewer: true # SHODAN shares... well, you know what SHODAN shares
 
 # LLM settings
 llm:

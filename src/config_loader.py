@@ -32,6 +32,16 @@ class HistoryWindow(BaseModel):
     coder: int = Field(default=0, description="Number of own previous messages coder can see")
     tester: int = Field(default=0, description="Number of own previous messages tester can see")
     reviewer: int = Field(default=0, description="Number of own previous messages reviewer can see")
+    env_switch_reports: int = Field(default=5, description="Number of previous environment switch reports to include")
+    agent_opinions: int = Field(default=8, description="Number of previous agent opinions to show for team chatter")
+
+class AgentOpinionsConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    enabled: bool = Field(default=False, description="Master switch for agent opinions feature")
+    manager: bool = Field(default=True, description="Manager shares opinions")
+    coder: bool = Field(default=False, description="Coder shares opinions (usually false)")
+    tester: bool = Field(default=True, description="Tester shares opinions")
+    reviewer: bool = Field(default=True, description="Reviewer (SHODAN) shares opinions")
 
 class Agents(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -39,6 +49,7 @@ class Agents(BaseModel):
     show_thinking: bool = Field(default=False, description="Show agent thinking process output")
     show_coder_output: bool = Field(default=True, description="Show the code that Coder generates (syntax highlighted)")
     history_window: HistoryWindow = Field(default_factory=HistoryWindow, description="Siloed conversation history per agent")
+    agent_opinions: AgentOpinionsConfig = Field(default_factory=AgentOpinionsConfig, description="Agent opinions/chatter configuration")
 
 class Llm(BaseModel):
     model_config = ConfigDict(extra='forbid')

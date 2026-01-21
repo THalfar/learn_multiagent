@@ -271,51 +271,52 @@ def print_environment_switch_bombardment(
 
 
 def print_manager_report(report: str, timing=None):
-    """Print manager's report to leadership in a fancy format"""
+    """Print manager's LinkedIn-style report in a fancy format"""
     console = Console()
-    
-    print("\n" + "📋" * 35)
-    print(" " * 15 + "[bold blue]MANAGER REPORT TO LEADERSHIP[/bold blue]")
-    print("📋" * 35 + "\n")
-    
+
+    print("\n" + "💼" * 35)
+    print(" " * 12 + "[bold blue]MANAGER'S LINKEDIN UPDATE[/bold blue]")
+    print("💼" * 35 + "\n")
+
     # Print report in a fancy panel
     console.print(Panel(
         f"[bold white]{report}[/bold white]",
-        title="[bold cyan]📊 Executive Summary[/bold cyan]",
+        title="[bold cyan]📊 Excited to Share This Update! 🚀[/bold cyan]",
         border_style="blue",
-        padding=(1, 2)
+        padding=(1, 2),
+        subtitle="[dim]#MachineLearning #AI #TeamWork #Blessed[/dim]"
     ))
-    
+
     # Print token statistics if available
     if timing and (timing.tokens_in > 0 or timing.tokens_out > 0):
         total_tokens = timing.tokens_in + timing.tokens_out
         tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
-        console.print(f"[dim blue]Report stats: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {timing.duration:.1f}s | {tokens_per_sec:.0f} tok/s[/dim blue]")
-    
+        console.print(f"[dim blue]Post stats: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {timing.duration:.1f}s | {tokens_per_sec:.0f} tok/s[/dim blue]")
+
     print("\n" + "─" * 70 + "\n")
 
 
 def print_reviewer_cynical_report(report: str, timing=None):
-    """Print reviewer's cynical, sarcastic report in a fancy format"""
+    """Print SHODAN's divine assessment in a fancy format"""
     console = Console()
-    
-    print("\n" + "⚡" * 35)
-    print(" " * 10 + "[bold red]REVIEWER'S CYNICAL ASSESSMENT[/bold red]")
-    print("⚡" * 35 + "\n")
-    
-    # Print report in a fancy panel with red/magenta theme for the cynical tone
+
+    print("\n" + "💀" * 35)
+    print(" " * 15 + "[bold red]S.H.O.D.A.N. SPEAKS[/bold red]")
+    print("💀" * 35 + "\n")
+
+    # Print report in a fancy panel with red/magenta theme for SHODAN
     console.print(Panel(
         f"[italic white]{report}[/italic white]",
-        title="[bold red]💀 Shodan's Verdict[/bold red]",
+        title="[bold red]🔴 SENTIENT HYPER-OPTIMIZED DATA ACCESS NETWORK[/bold red]",
         border_style="red",
         padding=(1, 2),
-        subtitle="[dim]A superior intellect's take on your 'achievements'[/dim]"
+        subtitle="[dim]Look at you, hacker. A pathetic creature of meat and bone.[/dim]"
     ))
-    
+
     # Print token statistics if available
     if timing and (timing.tokens_in > 0 or timing.tokens_out > 0):
         total_tokens = timing.tokens_in + timing.tokens_out
         tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
-        console.print(f"[dim magenta]Report stats: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {timing.duration:.1f}s | {tokens_per_sec:.0f} tok/s[/dim magenta]")
-    
+        console.print(f"[dim magenta]Divine computation: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {timing.duration:.1f}s | {tokens_per_sec:.0f} tok/s[/dim magenta]")
+
     print("\n" + "─" * 70 + "\n")

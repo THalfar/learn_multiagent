@@ -7,6 +7,55 @@ from langchain_openai import ChatOpenAI
 from rich.console import Console
 
 
+# Known context window sizes for models (in tokens)
+# Used for tracking context usage and preventing overflow
+MODEL_CONTEXT_SIZES = {
+    # DeepSeek models
+    "deepseek-r1": 32768,
+    "deepseek-r1:32b": 32768,
+    "deepseek-r1:14b": 32768,
+    "deepseek-r1:7b": 32768,
+    "deepseek-coder": 32768,
+    # Qwen models
+    "qwen": 32768,
+    "qwen3": 32768,
+    "qwen3-coder": 32768,
+    "qwen3-coder:30b": 32768,
+    "qwen2.5": 32768,
+    "qwq": 32768,
+    "qwq:32b": 32768,
+    # Llama models
+    "llama3": 8192,
+    "llama3.1": 131072,  # 128K
+    "llama3.2": 131072,
+    "llama3.3": 131072,
+    # Mistral models
+    "mistral": 32768,
+    "mixtral": 32768,
+    # API models (Claude, Grok, etc.)
+    "api": 200000,  # Conservative estimate for frontier API models
+    "grok": 131072,
+    "claude": 200000,
+    # Default fallback
+    "default": 8192,
+}
+
+def get_model_context_size(model_name: str) -> int:
+    """Get context window size for a model. Returns size in tokens."""
+    model_lower = model_name.lower()
+
+    # Exact match first
+    if model_lower in MODEL_CONTEXT_SIZES:
+        return MODEL_CONTEXT_SIZES[model_lower]
+
+    # Try prefix matches (e.g., "deepseek-r1:32b" matches "deepseek-r1")
+    for key, size in MODEL_CONTEXT_SIZES.items():
+        if model_lower.startswith(key) or key in model_lower:
+            return size
+
+    return MODEL_CONTEXT_SIZES["default"]
+
+
 def unload_ollama_models(ollama_base_url: str = "http://localhost:11434"):
     """Unload all models from Ollama to free VRAM and WAIT for unload to complete."""
     # Strip /v1 suffix if present (native API doesn't use it)
@@ -315,12 +364,17 @@ class BaseAgent:
         return result
     
     def print_token_stats(self, timing: AgentTiming):
-        """Print token statistics after agent response"""
+        """Print token statistics after agent response with context window usage"""
         if timing.tokens_in == 0 and timing.tokens_out == 0:
             return  # No token data available
 
         total_tokens = timing.tokens_in + timing.tokens_out
         tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
+
+        # Get context window size for this model
+        context_size = get_model_context_size(self.model_name)
+        context_pct = (timing.tokens_in / context_size * 100) if context_size > 0 else 0
+        context_remaining = context_size - timing.tokens_in
 
         agent_colors = {
             "manager": "blue",
@@ -330,18 +384,160 @@ class BaseAgent:
         }
         color = agent_colors.get(self.agent_name, "white")
 
+        # Build stats line
+        stats_line = f"Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s"
+
+        # Add context usage info
+        context_line = f"Context: {context_pct:.1f}% used ({timing.tokens_in:,}/{context_size:,}) | {context_remaining:,} remaining"
+
         # Use Console for proper rich formatting
         console = Console()
+
+        # Print token stats with agent color
         if color == "blue":
-            console.print(f"[dim blue]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim blue]")
+            console.print(f"[dim blue]{stats_line}[/dim blue]")
         elif color == "green":
-            console.print(f"[dim green]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim green]")
+            console.print(f"[dim green]{stats_line}[/dim green]")
         elif color == "yellow":
-            console.print(f"[dim yellow]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim yellow]")
+            console.print(f"[dim yellow]{stats_line}[/dim yellow]")
         elif color == "magenta":
-            console.print(f"[dim magenta]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim magenta]")
+            console.print(f"[dim magenta]{stats_line}[/dim magenta]")
         else:
-            console.print(f"[dim]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim]")
+            console.print(f"[dim]{stats_line}[/dim]")
+
+        # Print context usage with color based on percentage
+        if context_pct >= 80:
+            console.print(f"[bold red]⚠️ {context_line} - DANGER: Context nearly full![/bold red]")
+        elif context_pct >= 60:
+            console.print(f"[yellow]⚠️ {context_line} - Warning: High context usage[/yellow]")
+        elif context_pct >= 40:
+            console.print(f"[dim yellow]{context_line}[/dim yellow]")
+        else:
+            console.print(f"[dim green]{context_line}[/dim green]")
+
+    def print_context_breakdown(self, state: dict, prompt_tokens: int = 0):
+        """
+        Print comprehensive breakdown of all context components.
+        Shows: own history, team chatter, env reports, prompt, and total usage.
+        Helps with context window optimization.
+        """
+        console = Console()
+        context_size = get_model_context_size(self.model_name)
+
+        components = []
+        total_tokens = 0
+
+        # 1. Own conversation history
+        history_window = getattr(self.config.agents.history_window, self.agent_name, 0)
+        if history_window > 0:
+            messages = state.get("conversation_history", [])
+            agent_messages = [msg for msg in messages if msg.get("agent") == self.agent_name]
+            recent_messages = agent_messages[-history_window:] if len(agent_messages) > history_window else agent_messages
+            if recent_messages:
+                history_text = "\n\n".join([msg.get("content", "") for msg in recent_messages])
+                history_tokens = self.estimate_tokens(history_text)
+                total_tokens += history_tokens
+                components.append({
+                    "name": "Own history",
+                    "count": len(recent_messages),
+                    "unit": "msg",
+                    "tokens": history_tokens,
+                    "icon": "💾"
+                })
+
+        # 2. Team chatter (agent opinions)
+        agent_opinions_config = getattr(self.config.agents, 'agent_opinions', None)
+        if agent_opinions_config and getattr(agent_opinions_config, 'enabled', False):
+            opinions_window = getattr(self.config.agents.history_window, 'agent_opinions', 8)
+            opinions = state.get("agent_opinions", [])
+            recent_opinions = opinions[-opinions_window:] if len(opinions) > opinions_window else opinions
+            if recent_opinions:
+                opinions_text = "\n".join([op.get("opinion", "") for op in recent_opinions])
+                opinions_tokens = self.estimate_tokens(opinions_text) + 200  # overhead for formatting
+                total_tokens += opinions_tokens
+                components.append({
+                    "name": "Team chatter",
+                    "count": len(recent_opinions),
+                    "unit": "opinions",
+                    "tokens": opinions_tokens,
+                    "icon": "💬"
+                })
+
+        # 3. Environment switch reports (kierrosraportit)
+        env_reports_window = getattr(self.config.agents.history_window, 'env_switch_reports', 5)
+        env_reports = state.get("env_switch_reports", [])
+        recent_reports = env_reports[-env_reports_window:] if len(env_reports) > env_reports_window else env_reports
+        if recent_reports:
+            reports_text = "\n".join([
+                f"{r.get('manager_report', '')[:600]} {r.get('reviewer_report', '')[:800]}"
+                for r in recent_reports
+            ])
+            reports_tokens = self.estimate_tokens(reports_text) + 300  # overhead
+            total_tokens += reports_tokens
+            components.append({
+                "name": "Env reports",
+                "count": len(recent_reports),
+                "unit": "reports",
+                "tokens": reports_tokens,
+                "icon": "📊"
+            })
+
+        # 4. Current prompt/task (if provided)
+        if prompt_tokens > 0:
+            total_tokens += prompt_tokens
+            components.append({
+                "name": "Current prompt",
+                "count": 1,
+                "unit": "prompt",
+                "tokens": prompt_tokens,
+                "icon": "📝"
+            })
+
+        # Don't print if nothing to show
+        if not components:
+            return
+
+        # Print breakdown
+        agent_colors = {"manager": "blue", "coder": "green", "tester": "yellow", "reviewer": "magenta"}
+        color = agent_colors.get(self.agent_name, "white")
+
+        console.print(f"[dim]┌─ Context Breakdown ({self.agent_name.upper()}) ─────────────────────[/dim]")
+
+        for comp in components:
+            pct = (comp["tokens"] / context_size * 100) if context_size > 0 else 0
+            bar_width = int(pct / 2)  # Scale to ~50 chars max
+            bar = "█" * min(bar_width, 25) + "░" * max(0, 5 - bar_width)
+
+            # Color based on percentage
+            if pct >= 20:
+                comp_color = "yellow"
+            elif pct >= 10:
+                comp_color = "dim yellow"
+            else:
+                comp_color = "dim"
+
+            console.print(f"[{comp_color}]│ {comp['icon']} {comp['name']:15} {comp['count']:3} {comp['unit']:8} │ {comp['tokens']:>6,} tok ({pct:4.1f}%) {bar}[/{comp_color}]")
+
+        # Total
+        total_pct = (total_tokens / context_size * 100) if context_size > 0 else 0
+        remaining = context_size - total_tokens
+
+        console.print(f"[dim]├─────────────────────────────────────────────────────[/dim]")
+
+        # Total line with appropriate color
+        if total_pct >= 60:
+            console.print(f"[bold yellow]│ 📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%) ⚠️[/bold yellow]")
+            console.print(f"[yellow]│ 🔓 Remaining: {remaining:,} tokens[/yellow]")
+        elif total_pct >= 40:
+            console.print(f"[yellow]│ 📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/yellow]")
+            console.print(f"[dim]│ 🔓 Remaining: {remaining:,} tokens[/dim]")
+        else:
+            console.print(f"[dim green]│ 📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/dim green]")
+            console.print(f"[dim]│ 🔓 Remaining: {remaining:,} tokens[/dim]")
+
+        console.print(f"[dim]└─────────────────────────────────────────────────────[/dim]")
+
+        return total_tokens
 
     def format_conversation_history(self, state: dict) -> str:
         """
@@ -391,7 +587,10 @@ class BaseAgent:
         history_lines.append("=" * 70)
         history_lines.append("")  # Empty line after history
 
-        # Print token usage for monitoring (only if history exists)
+        # Print token usage for monitoring with context % (only if history exists)
+        context_size = get_model_context_size(self.model_name)
+        history_pct = (history_tokens / context_size * 100) if context_size > 0 else 0
+
         agent_colors = {
             "manager": "blue",
             "coder": "green",
@@ -403,14 +602,21 @@ class BaseAgent:
         # Use Console for proper rich formatting
         from rich.console import Console
         console = Console()
-        if color == "blue":
-            console.print(f"[dim blue]💾 Manager history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim blue]")
+
+        # Format message with context %
+        history_msg = f"💾 {self.agent_name.capitalize()} history: {len(recent_messages)} msg, ~{history_tokens:,} tokens ({history_pct:.1f}% of {context_size:,} context)"
+
+        # Color based on usage
+        if history_pct >= 30:
+            console.print(f"[yellow]{history_msg} ⚠️[/yellow]")
+        elif color == "blue":
+            console.print(f"[dim blue]{history_msg}[/dim blue]")
         elif color == "green":
-            console.print(f"[dim green]💾 Coder history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim green]")
+            console.print(f"[dim green]{history_msg}[/dim green]")
         elif color == "yellow":
-            console.print(f"[dim yellow]💾 Tester history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim yellow]")
+            console.print(f"[dim yellow]{history_msg}[/dim yellow]")
         elif color == "magenta":
-            console.print(f"[dim magenta]💾 Reviewer history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim magenta]")
+            console.print(f"[dim magenta]{history_msg}[/dim magenta]")
 
         return "\n".join(history_lines)
 
@@ -470,6 +676,100 @@ class BaseAgent:
 
         # Return updated messages (will be merged into state by LangGraph)
         return {"conversation_history": messages}
+
+    def format_agent_opinions_context(self, state: dict) -> str:
+        """
+        Format recent agent opinions for cross-agent "dialogue".
+        Creates a chatter/gossip section showing what other agents have been saying.
+        """
+        # Check if opinions feature is enabled
+        agent_opinions_config = getattr(self.config.agents, 'agent_opinions', None)
+        if not agent_opinions_config or not getattr(agent_opinions_config, 'enabled', False):
+            return ""
+
+        # Get history window for opinions
+        history_window = getattr(self.config.agents.history_window, 'agent_opinions', 8)
+
+        # Get all opinions from state
+        opinions = state.get("agent_opinions", [])
+        if not opinions:
+            return ""
+
+        # Take recent opinions
+        recent_opinions = opinions[-history_window:] if len(opinions) > history_window else opinions
+
+        if not recent_opinions:
+            return ""
+
+        # Format based on agent type (SHODAN gets different framing)
+        if self.agent_name == "reviewer":
+            header = "INSECT CHATTER (your minions have opinions... how amusing):"
+        else:
+            header = "TEAM CHATTER (what your colleagues have been saying):"
+
+        lines = []
+        lines.append("=" * 60)
+        lines.append(header)
+        lines.append("=" * 60)
+
+        for opinion in recent_opinions:
+            agent = opinion.get("agent", "Unknown")
+            iteration = opinion.get("iteration", "?")
+            content = opinion.get("opinion", "")[:400]  # Truncate long opinions
+
+            # Add emoji/label based on agent
+            if agent == "manager":
+                label = "📊 Manager"
+            elif agent == "tester":
+                label = "🧪 Tester"
+            elif agent == "reviewer":
+                label = "💀 SHODAN"
+            else:
+                label = agent.capitalize()
+
+            lines.append(f"\n[Iter {iteration}] {label}:")
+            lines.append(f"  \"{content}\"")
+            lines.append("-" * 40)
+
+        lines.append("=" * 60)
+        lines.append("Feel free to react to what they said, agree, disagree, or ignore!")
+        lines.append("")
+
+        # Print token estimate with context %
+        context_text = "\n".join(lines)
+        tokens = self.estimate_tokens(context_text)
+        context_size = get_model_context_size(self.model_name)
+        opinions_pct = (tokens / context_size * 100) if context_size > 0 else 0
+
+        from rich.console import Console
+        console = Console()
+        opinions_msg = f"💬 Team chatter: {len(recent_opinions)} opinions, ~{tokens:,} tokens ({opinions_pct:.1f}% of context)"
+
+        if opinions_pct >= 15:
+            console.print(f"[yellow]{opinions_msg} ⚠️[/yellow]")
+        else:
+            console.print(f"[dim cyan]{opinions_msg}[/dim cyan]")
+
+        return context_text
+
+    def save_opinion_to_state(self, state: dict, opinion: str):
+        """
+        Save this agent's opinion to state for other agents to see.
+        """
+        if not opinion:
+            return {}
+
+        opinions = state.get("agent_opinions", [])
+
+        opinion_entry = {
+            "agent": self.agent_name,
+            "iteration": state.get("iteration", 0),
+            "opinion": opinion
+        }
+
+        opinions.append(opinion_entry)
+
+        return {"agent_opinions": opinions}
 
     def call_llm(self, prompt):
         # Don't show model info - too verbose
