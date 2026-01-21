@@ -4,7 +4,6 @@ from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.console import Console
 import os
-import random
 import difflib
 
 console = Console()
@@ -74,24 +73,19 @@ class Coder(BaseAgent):
                 last_part = "\n".join(prev_lines[-150:])
                 return f"Previous iteration code (iter {iteration - 1}, showing first 150 and last 150 of {len(prev_lines)} total lines):\n{first_part}\n... ({len(prev_lines) - 300} lines omitted) ...\n{last_part}"
         
-        # If we have current code but no previous code, show current code
+        # If we have current code but no previous code, show FULL code
+        # (30B model has plenty of context, RL scripts are small)
         if current_code:
             lines = current_code.splitlines()
-            if len(lines) <= 30:
-                # If code is short, show all
-                return f"Current code ({len(lines)} lines):\n" + "\n".join(lines)
-            
-            # Pick random starting point
-            max_start = max(0, len(lines) - 30)
-            start_line = random.randint(0, max_start)
-            end_line = start_line + 30
-            
-            # Add line numbers for context
-            context_lines = []
-            for i in range(start_line, min(end_line, len(lines))):
-                context_lines.append(f"{i+1:4d} | {lines[i]}")
-            
-            return f"Code snippet (lines {start_line+1}-{end_line} of {len(lines)} total lines):\n" + "\n".join(context_lines)
+            if len(lines) <= 500:  # Most RL scripts fit easily
+                # Show full code with line numbers for easy reference
+                numbered_lines = [f"{i+1:4d} | {line}" for i, line in enumerate(lines)]
+                return f"Current code ({len(lines)} lines - FULL):\n" + "\n".join(numbered_lines)
+            else:
+                # For very long code (rare), show generous context
+                first_part = [f"{i+1:4d} | {lines[i]}" for i in range(200)]
+                last_part = [f"{i+1:4d} | {lines[i]}" for i in range(len(lines)-200, len(lines))]
+                return f"Current code ({len(lines)} lines, showing first 200 + last 200):\n" + "\n".join(first_part) + f"\n... ({len(lines) - 400} lines omitted) ...\n" + "\n".join(last_part)
         
         # No code available (first iteration)
         return ""

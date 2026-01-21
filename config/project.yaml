@@ -49,8 +49,8 @@ video:
 # Agent loop settings (reduced for faster iteration)
 agents:
   max_iterations: 420
-  show_thinking: true  # Show agent thinking process (reasoning model output)
-  show_coder_output: true  # Show the code that Coder generates (visually formatted)
+  show_thinking: false  # Show agent thinking process (reasoning model output)
+  show_coder_output: false  # Show the code that Coder generates (visually formatted)
   history_window:  # How many of their OWN previous messages each agent can see (siloed memory)
     manager: 10    # Manager remembers strategies and decisions
     coder: 0       # Coder has no memory - pure stateless executor

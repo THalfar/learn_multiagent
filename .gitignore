@@ -23,3 +23,7 @@ __pycache__/
 .venv/
 venv/
 videos/
+
+# Docker test outputs
+docker/test_*.py
+docker/test_*_output/

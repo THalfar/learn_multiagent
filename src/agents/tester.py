@@ -2,12 +2,59 @@ import json
 import os
 import re
 import subprocess
+import platform
 from pathlib import Path
 from .base import BaseAgent
 from rich import print
 
 ALLOWED_DIR = os.path.abspath("output/")
 PROJECT_ROOT = os.path.abspath(".")
+
+# Docker sandbox configuration
+DOCKER_SANDBOX_ENABLED = True  # Set to False to run locally (for development)
+DOCKER_IMAGE = "rl-sandbox:latest"
+
+
+def run_in_container(code_path: str, output_dir: str, timeout: int) -> subprocess.CompletedProcess:
+    """
+    Execute code in Docker container for isolation.
+
+    Args:
+        code_path: Absolute path to Python code file on host
+        output_dir: Absolute path to output directory on host (for videos, logs)
+        timeout: Execution timeout in seconds
+
+    Returns:
+        subprocess.CompletedProcess with stdout, stderr, returncode
+    """
+    # Convert Windows paths to absolute paths
+    code_path_abs = os.path.abspath(code_path)
+    output_dir_abs = os.path.abspath(output_dir)
+
+    # Ensure output directory exists
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    cmd = [
+        "docker", "run",
+        "--rm",                              # Remove container after execution
+        "--network=none",                    # No network access
+        "--memory=8g",                       # Memory limit (enough for parallel envs)
+        "--cpus=10",                         # CPU limit: 10 of 16 threads, leaves 6 for Ollama/host
+        "--pids-limit=200",                  # Process limit
+        "-v", f"{code_path_abs}:/workspace/agent_script.py:ro",  # Code file (avoid 'code.py' - circular import)
+        "-v", f"{output_dir_abs}:/workspace/output:rw",          # Output directory (read-write)
+        DOCKER_IMAGE,
+        "python", "/workspace/agent_script.py"
+    ]
+
+    print(f"[dim]Running in Docker container ({DOCKER_IMAGE})...[/dim]")
+
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout
+    )
 
 def is_safe_code(code: str) -> bool:
     """
@@ -225,17 +272,24 @@ class Tester(BaseAgent):
             f.write(code)
 
         try:
-            # Run in conda env with environment-specific timeout
+            # Run with environment-specific timeout
             import time
             execution_start = time.time()
-            cmd = ["python", code_path]
-            result = subprocess.run(
-                cmd,
-                cwd=os.getcwd(),
-                capture_output=True,
-                text=True,
-                timeout=execution_timeout,  # Environment-specific timeout
-            )
+
+            if DOCKER_SANDBOX_ENABLED:
+                # Run in Docker container for isolation
+                result = run_in_container(code_path, video_dir, execution_timeout)
+            else:
+                # Run locally (for development/debugging)
+                cmd = ["python", code_path]
+                result = subprocess.run(
+                    cmd,
+                    cwd=os.getcwd(),
+                    capture_output=True,
+                    text=True,
+                    timeout=execution_timeout,
+                )
+
             execution_end = time.time()
             execution_duration = execution_end - execution_start
 
@@ -349,18 +403,14 @@ class Tester(BaseAgent):
             success_threshold = current_env.success_threshold if current_env else (env_progression[0].success_threshold if env_progression else 0)
             
             prompt_dict = self.config.get_prompt("tester")
-            # Format template - handle optional return_code parameter
+            # Format template with all available context
             template_vars = {
                 "execution_stdout": stdout,
                 "execution_stderr": stderr,
-                "success_threshold": success_threshold
+                "success_threshold": success_threshold,
+                "manager_task": state.get("current_task", "No task description available")
             }
-            # Only add return_code if the template expects it
-            try:
-                task_template = prompt_dict["task_template"].format(**template_vars)
-            except KeyError:
-                # Template doesn't have return_code placeholder, that's fine
-                task_template = prompt_dict["task_template"].format(**template_vars)
+            task_template = prompt_dict["task_template"].format(**template_vars)
 
             # Add conversation history (siloed - only this agent's previous messages)
             history_text = self.format_conversation_history(state)
