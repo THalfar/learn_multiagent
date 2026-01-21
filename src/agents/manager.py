@@ -15,7 +15,7 @@ class Manager(BaseAgent):
         tasks = state.get("tasks", [])
         test_results = state.get("test_results", "")
         review_feedback = state.get("review_feedback", "")
-        
+
         # Agent performance stats
         agent_performance = {}
         for agent in ["manager", "coder", "tester", "reviewer"]:
@@ -27,37 +27,59 @@ class Manager(BaseAgent):
                     "total_time": sum(durations),
                     "avg_time": sum(durations) / len(durations)
                 }
-        
-        # Build report prompt
-        report_prompt = f"""You are a project manager writing a brief executive report to leadership about completing an environment and moving to the next one.
 
-CURRENT ENVIRONMENT COMPLETED: {current_env.name}
+        # Get previous environment switch reports for context
+        previous_reports = state.get("env_switch_reports", [])
+        history_window = getattr(self.config.agents.history_window, 'env_switch_reports', 5)
+        recent_reports = previous_reports[-history_window:] if len(previous_reports) > history_window else previous_reports
+
+        # Format previous reports for context
+        previous_reports_context = ""
+        if recent_reports:
+            previous_reports_context = "\n\nYOUR PREVIOUS LINKEDIN-STYLE POSTS (learn from your evolving narrative):\n"
+            previous_reports_context += "=" * 60 + "\n"
+            for i, report in enumerate(recent_reports, 1):
+                env_name = report.get("environment", "Unknown")
+                content = report.get("manager_report", "")[:600]
+                previous_reports_context += f"\n[Post #{i} - {env_name} completed]\n{content}\n"
+                previous_reports_context += "-" * 40 + "\n"
+            previous_reports_context += "=" * 60 + "\n"
+            previous_reports_context += "Build on this narrative! Reference previous wins, show growth, maintain your personal brand.\n"
+
+        # Build report prompt - LINKEDIN STYLE
+        report_prompt = f"""You are a middle manager who LOVES LinkedIn. You're writing a post about your team's latest achievement.
+
+YOUR LINKEDIN PERSONA:
+- You use buzzwords like "synergy", "leverage", "paradigm shift", "game-changer", "excited to announce"
+- You hashtag everything #AI #MachineLearning #TeamWork #Leadership #Innovation #Blessed
+- You mention being "humbled" and "grateful" constantly
+- You talk about "the team" but subtly make it about yourself
+- You end with inspirational quotes or calls to action ("Agree? 👇")
+- You use emojis strategically but not excessively 🚀✨💪
+- You might mention grabbing coffee ☕ or having "aha moments"
+- You reference "the journey" and "lessons learned"
+{previous_reports_context}
+METRICS FOR YOUR POST:
+Environment conquered: {current_env.name}
 - Success threshold: {current_env.success_threshold}
-- Iterations used: {current_iterations}
+- Iterations required: {current_iterations}
 - Tasks completed: {len(tasks)}
-- Status: {'SOLVED' if current_env.name in solved_environments else 'MOVING ON'}
+- Status: {'✅ SOLVED' if current_env.name in solved_environments else '➡️ MOVING ON'}
 
-NEXT ENVIRONMENT: {next_env.name}
+Next challenge: {next_env.name}
 - Success threshold: {next_env.success_threshold}
 - Max episode steps: {next_env.max_episode_steps}
 
-OVERALL PROGRESS:
-- Environments solved: {len(solved_environments)}/{len(env_progression)}
-- Solved environments: {', '.join(solved_environments) if solved_environments else 'None'}
+Progress: {len(solved_environments)}/{len(env_progression)} environments completed
+Journey so far: {', '.join(solved_environments) if solved_environments else 'Just getting started!'}
 
-AGENT PERFORMANCE:
-{chr(10).join([f"- {agent}: {perf['calls']} calls, {perf['total_time']:.1f}s total, {perf['avg_time']:.1f}s avg" for agent, perf in agent_performance.items()])}
+Team performance:
+{chr(10).join([f"- {agent.capitalize()}: {perf['calls']} calls, {perf['total_time']:.1f}s total" for agent, perf in agent_performance.items()])}
 
-LATEST TEST RESULTS: {test_results[:500] if test_results else 'N/A'}
-LATEST REVIEW FEEDBACK: {review_feedback[:500] if review_feedback else 'N/A'}
+Write a 2-4 paragraph LinkedIn-style post about this milestone. Be enthusiastic, use corporate speak,
+reference "the team" while subtly taking credit, and end with hashtags.
 
-Write a brief, professional but engaging executive summary report (2-4 paragraphs) covering:
-1. What we accomplished with {current_env.name}
-2. Key learnings and insights
-3. What we're moving to next ({next_env.name}) and why
-4. Overall progress and momentum
-
-Be concise, positive, and forward-looking. Write as if reporting to leadership."""
+Remember: You're a middle manager who genuinely believes this is inspiring content."""
         
         # Call LLM to generate report
         response = self.call_llm_timed(report_prompt, stats, state.get("iteration", 0))

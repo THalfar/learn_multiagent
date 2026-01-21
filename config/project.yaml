@@ -60,6 +60,7 @@ agents:
     coder: 0       # Coder has no memory - pure stateless executor
     tester: 5      # Tester remembers recent testing patterns
     reviewer: 15   # Reviewer has longest memory to maintain guidance consistency
+    env_switch_reports: 5  # How many previous "kierrosraportit" (environment completion reports) to include in context
 
 # LLM settings
 llm:
