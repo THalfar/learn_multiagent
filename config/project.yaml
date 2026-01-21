@@ -34,11 +34,7 @@ environment_progression:
     max_episode_steps: 1600
     success_threshold: 300  # Official threshold: 300.0 over 100 episodes (reward range: -100 to 300+)
     execution_timeout: 2400  # 40 minutes (complex continuous control)
-  - name: "CarRacing-v2"
-    max_episode_steps: 1000
-    success_threshold: 900  # Official threshold: 900.0 over 100 episodes (reward: -0.1/frame + 1000/N per tile)
-    execution_timeout: 3600  # 60 minutes (most complex, requires vision)
-
+ 
 # Current environment (will be set automatically, starting from first)
 environment:
   name: "CartPole-v1"
@@ -53,8 +49,13 @@ video:
 # Agent loop settings (reduced for faster iteration)
 agents:
   max_iterations: 420
-  show_thinking: false  # Show agent thinking process (reasoning model output)
-  show_coder_output: false  # Show the code that Coder generates (visually formatted)
+  show_thinking: true  # Show agent thinking process (reasoning model output)
+  show_coder_output: true  # Show the code that Coder generates (visually formatted)
+  history_window:  # How many of their OWN previous messages each agent can see (siloed memory)
+    manager: 10    # Manager remembers strategies and decisions
+    coder: 0       # Coder has no memory - pure stateless executor
+    tester: 5      # Tester remembers recent testing patterns
+    reviewer: 15   # Reviewer has longest memory to maintain guidance consistency
 
 # LLM settings
 llm:
@@ -62,9 +63,9 @@ llm:
 
 # LLM routing - which agent uses which model
 agent_llm:
-  manager:  "deepseek-r1:32b"
+  manager:  "deepseek-r1:70b"
   reviewer:  "api" 
-  coder:   "qwen2.5-coder:14b"  
+  coder:   "qwen3-coder:30b"  
   tester: "deepseek-r1:32b"  
 
 # Ollama settings (used for all non-api models)

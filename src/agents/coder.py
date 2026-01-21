@@ -96,6 +96,84 @@ class Coder(BaseAgent):
         # No code available (first iteration)
         return ""
 
+    def _detect_and_fix_repetition(self, code: str) -> str:
+        """
+        Detect and handle repetition loops in generated code.
+        LLMs (especially local models) can get stuck repeating patterns.
+        """
+        lines = code.splitlines()
+
+        # Check 1: Too many import lines (normal script has ~10-30 imports max)
+        import_lines = [l for l in lines if l.strip().startswith(('import ', 'from '))]
+        if len(import_lines) > 50:
+            console.print(f"[yellow]⚠️  Detected repetition loop: {len(import_lines)} import lines (expected <50)[/yellow]")
+            # Deduplicate imports and keep unique ones
+            seen_imports = set()
+            unique_imports = []
+            for line in import_lines:
+                normalized = line.strip()
+                if normalized not in seen_imports:
+                    seen_imports.add(normalized)
+                    unique_imports.append(line)
+
+            # Find where actual code starts (after imports)
+            code_start_idx = 0
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped and not stripped.startswith(('import ', 'from ', '#')):
+                    code_start_idx = i
+                    break
+
+            # Rebuild code with unique imports + rest
+            rest_of_code = lines[code_start_idx:] if code_start_idx < len(lines) else []
+            # Filter out any repeated imports from rest
+            rest_of_code = [l for l in rest_of_code if not l.strip().startswith(('import ', 'from '))]
+
+            console.print(f"[green]✓ Cleaned to {len(unique_imports)} unique imports[/green]")
+            code = '\n'.join(unique_imports + [''] + rest_of_code)
+            lines = code.splitlines()
+
+        # Check 2: Repeated consecutive lines (exact duplicates)
+        if len(lines) > 10:
+            cleaned_lines = []
+            prev_line = None
+            repeat_count = 0
+            for line in lines:
+                if line == prev_line and line.strip():  # Same non-empty line
+                    repeat_count += 1
+                    if repeat_count > 2:  # Allow max 2 repeats (e.g., blank lines)
+                        continue  # Skip this repeated line
+                else:
+                    repeat_count = 0
+                cleaned_lines.append(line)
+                prev_line = line
+
+            if len(cleaned_lines) < len(lines):
+                removed = len(lines) - len(cleaned_lines)
+                console.print(f"[yellow]⚠️  Removed {removed} consecutively repeated lines[/yellow]")
+                code = '\n'.join(cleaned_lines)
+                lines = cleaned_lines
+
+        # Check 3: Unicode corruption (non-ASCII in code that shouldn't have it)
+        # Thai, Chinese, etc. characters in import statements = corruption
+        import re
+        suspicious_unicode = re.search(r'[\u0e00-\u0e7f\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', code)
+        if suspicious_unicode:
+            console.print(f"[yellow]⚠️  Detected Unicode corruption in output, cleaning...[/yellow]")
+            # Remove lines with suspicious unicode in import/code (not in strings)
+            cleaned_lines = []
+            for line in lines:
+                # If line has suspicious unicode and it's not inside a string
+                if re.search(r'[\u0e00-\u0e7f\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', line):
+                    # Check if it's in a string (rough check)
+                    if '"' not in line and "'" not in line:
+                        console.print(f"[dim]  Removed corrupted line: {line[:60]}...[/dim]")
+                        continue
+                cleaned_lines.append(line)
+            code = '\n'.join(cleaned_lines)
+
+        return code
+
     def __call__(self, state: dict) -> dict:
         # Coder is working
         if not self.config.agents.show_coder_output:
@@ -120,8 +198,12 @@ class Coder(BaseAgent):
         # Get code context (diff or random snippet)
         code_context = self._get_code_context(state)
         context_section = f"\n\n{code_context}" if code_context else ""
-        
-        full_prompt = prompt_dict["system"] + "\n\n" + task_template + context_section
+
+        # Add conversation history (siloed - only this agent's previous messages)
+        # Note: Coder has history_window=0, so this will be empty
+        history_text = self.format_conversation_history(state)
+
+        full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
         
         # Print thinking process if using reasoning model (but no other output)
@@ -137,19 +219,11 @@ class Coder(BaseAgent):
         
         code = response.content.strip()
 
-        # DEBUG: Log what the model actually outputs (only if NOT showing full code output)
-        if not self.config.agents.show_coder_output:
-            print(f"[dim][DEBUG] Coder model output length: {len(code)} chars[/dim]")
-            print(f"[dim][DEBUG] First 300 chars: {code[:300]}[/dim]")
-        if not code.startswith('import'):
-            print(f"[bold red]WARNING: Code doesn't start with 'import'! First 100 chars:[/bold red]")
-            print(f"[red]{code[:100]}[/red]")
-
         # Remove any thinking tags from code (shouldn't be there, but safety check)
         import re
         code = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
         code = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
-        
+
         # Strip markdown code blocks
         if code.startswith('```python'):
             code = code[9:].lstrip()
@@ -158,6 +232,9 @@ class Coder(BaseAgent):
         if code.endswith('```'):
             code = code[:-3].rstrip()
         code = code.strip()
+
+        # Detect repetition loops (common LLM failure mode)
+        code = self._detect_and_fix_repetition(code)
 
         # Show generated code if enabled (visually formatted)
         if self.config.agents.show_coder_output:
@@ -211,4 +288,10 @@ class Coder(BaseAgent):
                 task=state.get("current_task", "")
             )
 
-        return {"code": code}
+        # Save coder's response to conversation history
+        history_update = self.save_message_to_history(state, response.content)
+
+        result = {"code": code}
+        result.update(history_update)
+
+        return result

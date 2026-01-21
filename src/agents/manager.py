@@ -251,23 +251,10 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
                         "solved_environments": solved_environments,
                     }
         
-        # Show clear communication from reviewer
         review_feedback = state.get("review_feedback", "")
         review_suggestions = state.get("review_suggestions", "")
-        
-        if review_feedback:
-            print("\n" + "─" * 70)
-            print("[bold blue]MANAGER ← REVIEWER[/bold blue]")
-            print("─" * 70)
-            print(f"[magenta]{review_feedback}[/magenta]")
-            
-            # Show suggestions if available
-            if review_suggestions and review_suggestions != "No specific suggestions":
-                print(f"\n[yellow]Bug fixes to include in task:[/yellow]")
-                print(f"[dim]{review_suggestions}[/dim]")
-            
-            print("─" * 70 + "\n")
-        else:
+
+        if not review_feedback:
             print("\n" + "─" * 70)
             print("[bold blue]MANAGER: Starting first iteration[/bold blue]")
             print("─" * 70 + "\n")
@@ -309,7 +296,11 @@ Be concise, positive, and forward-looking. Write as if reporting to leadership."
             environment=current_env_name,
             success_threshold=current_success_threshold
         )
-        full_prompt = system_prompt + "\n\n" + task_template
+
+        # Add conversation history (siloed - only this agent's previous messages)
+        history_text = self.format_conversation_history(state)
+
+        full_prompt = system_prompt + "\n\n" + history_text + task_template
         response = self.call_llm_timed(full_prompt, state["stats"], expected_iteration)
         
         # Print thinking process if using reasoning model
@@ -666,7 +657,10 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         manager_guidance = f"Task: {next_task}"
         if clean_reasoning:
             manager_guidance += f"\nReasoning: {clean_reasoning}"
-        
+
+        # Save manager's response to conversation history
+        history_update = self.save_message_to_history(state, response.content)
+
         result = {
             "tasks": state.get("tasks", []) + [next_task],
             "current_task": next_task,
@@ -675,5 +669,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "current_env_index": current_env_index,  # Preserve environment index
             "solved_environments": solved_environments,  # Preserve solved environments
         }
-        
+
+        # Merge history update into result
+        result.update(history_update)
+
         return result

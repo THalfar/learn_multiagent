@@ -42,7 +42,7 @@ if __name__ == "__main__":
         "environment_switch_review_feedback": "",  # Initialize empty
         "manager_guidance": "",  # Manager's intent/guidance for reviewer
         "iteration": 0,
-        "messages": [],
+        "conversation_history": [],  # Renamed from "messages" to avoid LangGraph collision
         "stats": stats,
         "approved": False,
         "current_env_index": 0,  # Start with first environment

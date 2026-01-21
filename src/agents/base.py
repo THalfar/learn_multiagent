@@ -88,14 +88,21 @@ class BaseAgent:
             except Exception as e:
                 print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
-            # Use Ollama with specified model - no token limits, let coder be smart
+            # Use Ollama with specified model
+            # Coder gets token limit to prevent repetition loops
+            # Other agents get no limit (they produce shorter outputs)
+            coder_max_tokens = 6000 if agent_name == "coder" else None
+
             self.llm = ChatOpenAI(
                 model=model_name,
                 base_url=config.ollama.base_url,
                 api_key=config.ollama.api_key,
                 temperature=0,
                 timeout=300.0,  # 5 minutes for generation (model already loaded)
-                max_retries=2  # Retry on transient failures
+                max_retries=2,  # Retry on transient failures
+                max_tokens=coder_max_tokens,
+                frequency_penalty=0.3,  # Penalize token repetition (OpenAI-compatible)
+                presence_penalty=0.1,   # Penalize topic repetition
             )
             # Using Ollama - no log needed
         
@@ -263,12 +270,26 @@ class BaseAgent:
         # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
-        
-        # If using Ollama (not API), unload other models first
+
+        # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
-            # unload_ollama_models(self.config.ollama.base_url)
-            pass
-        
+            unload_ollama_models(self.config.ollama.base_url)
+
+            # Preload this agent's model so it's ready
+            print(f"[dim]Loading model {self.model_name}...[/dim]")
+            preload_start = time.time()
+            try:
+                base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                requests.post(
+                    f"{base_url}/api/generate",
+                    json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                    timeout=120
+                )
+                preload_time = time.time() - preload_start
+                print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
+            except Exception as e:
+                print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+
         timing = AgentTiming(agent=self.agent_name, iteration=iteration)
         timing.start_time = time.time()
         
@@ -299,18 +320,18 @@ class BaseAgent:
         """Print token statistics after agent response"""
         if timing.tokens_in == 0 and timing.tokens_out == 0:
             return  # No token data available
-        
+
         total_tokens = timing.tokens_in + timing.tokens_out
         tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
-        
+
         agent_colors = {
             "manager": "blue",
-            "coder": "green", 
+            "coder": "green",
             "tester": "yellow",
             "reviewer": "magenta"
         }
         color = agent_colors.get(self.agent_name, "white")
-        
+
         # Use Console for proper rich formatting
         console = Console()
         if color == "blue":
@@ -324,18 +345,120 @@ class BaseAgent:
         else:
             console.print(f"[dim]Tokens: {timing.tokens_in:,} in → {timing.tokens_out:,} out | {tokens_per_sec:.0f} tok/s[/dim]")
 
+    def format_conversation_history(self, state: dict) -> str:
+        """
+        Format this agent's own conversation history (siloed memory).
+        Only includes messages from THIS agent, limited by history_window config.
+        """
+        # Get history window for this agent
+        history_window = getattr(self.config.agents.history_window, self.agent_name, 0)
+
+        if history_window == 0:
+            return ""  # No history for this agent
+
+        # Get all messages from state
+        messages = state.get("conversation_history", [])
+
+        # Filter to only this agent's messages
+        agent_messages = [msg for msg in messages if msg.get("agent") == self.agent_name]
+
+        # Take only the last N messages
+        recent_messages = agent_messages[-history_window:] if len(agent_messages) > history_window else agent_messages
+
+        if not recent_messages:
+            return ""
+
+        # Calculate total token count for history
+        total_history_text = "\n\n".join([msg.get("content", "") for msg in recent_messages])
+        history_tokens = self.estimate_tokens(total_history_text)
+
+        # Format the history
+        history_lines = []
+        history_lines.append("=" * 70)
+        history_lines.append(f"YOUR PREVIOUS RESPONSES (last {len(recent_messages)} message{'s' if len(recent_messages) != 1 else ''}):")
+        history_lines.append(f"Memory usage: ~{history_tokens:,} tokens")
+        history_lines.append("=" * 70)
+        history_lines.append("NOTE: Use your previous thoughts and learnings below to help with")
+        history_lines.append("      your current work. Learn from past iterations.")
+        history_lines.append("=" * 70)
+
+        for i, msg in enumerate(recent_messages, 1):
+            iteration = msg.get("iteration", "?")
+            content = msg.get("content", "")
+            history_lines.append(f"\n[Iteration {iteration}]")
+            history_lines.append(content)
+            if i < len(recent_messages):
+                history_lines.append("\n" + "-" * 70)
+
+        history_lines.append("=" * 70)
+        history_lines.append("")  # Empty line after history
+
+        # Print token usage for monitoring (only if history exists)
+        agent_colors = {
+            "manager": "blue",
+            "coder": "green",
+            "tester": "yellow",
+            "reviewer": "magenta"
+        }
+        color = agent_colors.get(self.agent_name, "white")
+
+        # Use Console for proper rich formatting
+        from rich.console import Console
+        console = Console()
+        if color == "blue":
+            console.print(f"[dim blue]💾 Manager history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim blue]")
+        elif color == "green":
+            console.print(f"[dim green]💾 Coder history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim green]")
+        elif color == "yellow":
+            console.print(f"[dim yellow]💾 Tester history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim yellow]")
+        elif color == "magenta":
+            console.print(f"[dim magenta]💾 Reviewer history: {len(recent_messages)} msg, ~{history_tokens:,} tokens[/dim magenta]")
+
+        return "\n".join(history_lines)
+
+    def save_message_to_history(self, state: dict, content: str):
+        """
+        Save this agent's message to the conversation history in state.
+        """
+        messages = state.get("conversation_history", [])
+
+        message = {
+            "agent": self.agent_name,
+            "iteration": state.get("iteration", 0),
+            "content": content
+        }
+
+        messages.append(message)
+
+        # Return updated messages (will be merged into state by LangGraph)
+        return {"conversation_history": messages}
+
     def call_llm(self, prompt):
         # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
-        
-        # If using Ollama (not API), unload other models first
+
+        # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
-            # unload_ollama_models(self.config.ollama.base_url)
-            pass
-        
+            unload_ollama_models(self.config.ollama.base_url)
+
+            # Preload this agent's model so it's ready
+            print(f"[dim]Loading model {self.model_name}...[/dim]")
+            preload_start = time.time()
+            try:
+                base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                requests.post(
+                    f"{base_url}/api/generate",
+                    json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                    timeout=120
+                )
+                preload_time = time.time() - preload_start
+                print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
+            except Exception as e:
+                print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+
         result = self.llm.invoke(prompt)
-        
+
         return result
 
     def __call__(self, state: dict) -> dict:

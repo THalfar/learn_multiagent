@@ -1,7 +1,6 @@
-from typing import TypedDict, Annotated, List, Any
+from typing import TypedDict, Annotated, List, Any, Dict
 import operator
 from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
 from .config_loader import Config
 from .agents.manager import Manager
 from .agents.coder import Coder
@@ -29,7 +28,7 @@ def create_graph(config: Config):
         environment_switch_review_feedback: str  # Reviewer's feedback from environment switch
         manager_guidance: str  # Manager's intent/guidance for reviewer (what manager wanted)
         iteration: Annotated[int, operator.add]
-        messages: Annotated[list, add_messages]
+        conversation_history: List[Dict[str, Any]]  # Siloed conversation history per agent
         run_id: str
         video_dir: str
         stats: Any

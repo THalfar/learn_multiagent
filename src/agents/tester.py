@@ -361,7 +361,11 @@ class Tester(BaseAgent):
             except KeyError:
                 # Template doesn't have return_code placeholder, that's fine
                 task_template = prompt_dict["task_template"].format(**template_vars)
-            full_prompt = prompt_dict["system"] + "\\n\\n" + task_template
+
+            # Add conversation history (siloed - only this agent's previous messages)
+            history_text = self.format_conversation_history(state)
+
+            full_prompt = prompt_dict["system"] + "\\n\\n" + history_text + task_template
 
             response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
             
@@ -458,11 +462,17 @@ class Tester(BaseAgent):
                     execution_time=execution_duration
                 )
 
-            return {
+            # Save tester's response to conversation history
+            history_update = self.save_message_to_history(state, response.content)
+
+            result = {
                 "test_results": test_results,
                 "execution_stdout": stdout,
                 "execution_stderr": result.stderr
             }
+            result.update(history_update)
+
+            return result
 
         except subprocess.TimeoutExpired:
             timeout_minutes = execution_timeout // 60

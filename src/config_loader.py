@@ -26,11 +26,19 @@ class Video(BaseModel):
     output_dir: str
     record_frequency: int
 
+class HistoryWindow(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    manager: int = Field(default=0, description="Number of own previous messages manager can see")
+    coder: int = Field(default=0, description="Number of own previous messages coder can see")
+    tester: int = Field(default=0, description="Number of own previous messages tester can see")
+    reviewer: int = Field(default=0, description="Number of own previous messages reviewer can see")
+
 class Agents(BaseModel):
     model_config = ConfigDict(extra='forbid')
     max_iterations: int
     show_thinking: bool = Field(default=False, description="Show agent thinking process output")
     show_coder_output: bool = Field(default=True, description="Show the code that Coder generates (syntax highlighted)")
+    history_window: HistoryWindow = Field(default_factory=HistoryWindow, description="Siloed conversation history per agent")
 
 class Llm(BaseModel):
     model_config = ConfigDict(extra='forbid')

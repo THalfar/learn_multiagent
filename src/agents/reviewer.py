@@ -52,7 +52,11 @@ class Reviewer(BaseAgent):
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos")
         )
-        full_prompt = system_prompt + "\n\n" + task_template
+
+        # Add conversation history (siloed - only this agent's previous messages)
+        history_text = self.format_conversation_history(state)
+
+        full_prompt = system_prompt + "\n\n" + history_text + task_template
         response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
         
         # Print thinking process if using reasoning model
@@ -313,12 +317,18 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 feedback=feedback,
                 suggestions=suggestions_text
             )
-        
-        return {
+
+        # Save reviewer's response to conversation history
+        history_update = self.save_message_to_history(state, response.content)
+
+        result = {
             "review_feedback": feedback,
             "review_suggestions": suggestions_text,
             "approved": approved
         }
+        result.update(history_update)
+
+        return result
     
     def generate_environment_switch_report(
         self,
