@@ -753,7 +753,9 @@ class Tester(BaseAgent):
             execution_timeout = base_timeout
         
         run_id = state["run_id"]
-        code_dir = f"output/{run_id}/code"
+        # Use env-specific subdirectory for code and videos
+        current_env_name = current_env.name if current_env else "unknown"
+        code_dir = f"output/{run_id}/{current_env_name}/code"
         video_dir = state["video_dir"]
         
         # Normalize video_dir to absolute path (fixes Windows path issues)

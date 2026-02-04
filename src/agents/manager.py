@@ -295,7 +295,7 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                         manager_report = ""
                         reviewer_report = ""
 
-                    # Log environment switch
+                    # Log environment switch and save snapshot
                     logger = state.get("conversation_logger")
                     if logger:
                         logger.log_environment_switch(
@@ -304,6 +304,8 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                             manager_report=manager_report,
                             reviewer_report=reviewer_report  # Just the report text for logging
                         )
+                        # Save conversation snapshot to the completed environment's directory
+                        logger.save_environment_snapshot(current_env.name, state.get("run_id", ""))
 
                     # Save reports to state for history (kierrosraportit)
                     env_switch_reports = state.get("env_switch_reports", [])
@@ -342,6 +344,12 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                         print(f"[bold red]ERROR: Failed to update config: {e}[/bold red]")
                         return {"current_task": f"ERROR: Config update failed: {e}"}
 
+                    # Build new video_dir for next environment
+                    import os
+                    run_id = state.get("run_id", "")
+                    new_video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{next_env.name}/videos"))
+                    os.makedirs(new_video_dir, exist_ok=True)
+
                     # Reset state for new environment (preserve env_switch_reports for history!)
                     return {
                         "current_env_index": next_env_index,
@@ -354,6 +362,7 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                         "review_feedback": "",
                         "review_suggestions": "",
                         "current_task": "",
+                        "video_dir": new_video_dir,  # Env-specific video directory
                         "iteration": 1,  # LangGraph adds this automatically due to operator.add
                     }
                 else:
@@ -781,7 +790,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     manager_report = ""
                     reviewer_report = ""
                 
-                # Log environment switch
+                # Log environment switch and save snapshot
                 logger = state.get("conversation_logger")
                 if logger:
                     logger.log_environment_switch(
@@ -790,7 +799,9 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                         manager_report=manager_report,
                         reviewer_report=reviewer_report  # Just the report text for logging
                     )
-                
+                    # Save conversation snapshot to the completed environment's directory
+                    logger.save_environment_snapshot(current_env.name, state.get("run_id", ""))
+
                 # Additional validation: verify next_env_index is still valid (double-check)
                 if next_env_index < 0 or next_env_index >= len(env_progression):
                     print(f"[bold red]ERROR: Invalid next_env_index {next_env_index} (valid range: 0-{len(env_progression) - 1})[/bold red]")
@@ -817,6 +828,12 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     print(f"[bold red]ERROR: Failed to update config: {e}[/bold red]")
                     return {"current_task": f"ERROR: Config update failed: {e}"}
                 
+                # Build new video_dir for next environment
+                import os
+                run_id = state.get("run_id", "")
+                new_video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{next_env.name}/videos"))
+                os.makedirs(new_video_dir, exist_ok=True)
+
                 # Reset state for new environment (don't save reviewer's switch report - it's already printed)
                 return {
                     "current_env_index": next_env_index,
@@ -828,6 +845,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     "review_feedback": "",
                     "review_suggestions": "",
                     "current_task": "",
+                    "video_dir": new_video_dir,  # Env-specific video directory
                     "iteration": 1,  # LangGraph adds this automatically due to operator.add
                 }
             else:

@@ -3,6 +3,7 @@ Conversation logger for agent interactions.
 Logs all agent communications to a file for post-analysis.
 """
 import os
+import shutil
 from datetime import datetime
 from typing import Optional
 
@@ -142,6 +143,24 @@ class ConversationLogger:
             f.write(f"Ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("=" * 80 + "\n")
     
+    def save_environment_snapshot(self, env_name: str, run_id: str):
+        """
+        Save a snapshot of the conversation so far into the environment's subdirectory.
+        Called when an environment is completed and we switch to the next one.
+
+        Args:
+            env_name: Name of the completed environment (e.g. "CartPole-v1")
+            run_id: Run identifier for building the output path
+        """
+        env_dir = os.path.join("output", run_id, env_name)
+        os.makedirs(env_dir, exist_ok=True)
+        snapshot_path = os.path.join(env_dir, "conversation.txt")
+
+        try:
+            shutil.copy2(self.log_file, snapshot_path)
+        except Exception as e:
+            print(f"[dim red]Warning: Could not save conversation snapshot: {e}[/dim red]")
+
     def get_log_path(self) -> str:
         """Get the path to the log file."""
         return self.log_file

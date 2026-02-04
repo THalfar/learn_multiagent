@@ -28,9 +28,10 @@ if __name__ == "__main__":
     if not env_progression:
         raise ValueError("No environment_progression defined in config!")
     
-    # Normalize video_dir to absolute path (fixes Windows path issues)
-    video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/videos"))
-    os.makedirs(video_dir, exist_ok=True)  # Create directory upfront
+    # Build env-specific output directory: output/{run_id}/{env_name}/videos
+    first_env_name = env_progression[0].name
+    video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{first_env_name}/videos"))
+    os.makedirs(video_dir, exist_ok=True)
     
     initial_state = {
         "run_id": run_id,
@@ -73,7 +74,7 @@ if __name__ == "__main__":
     iterations = result.get("iteration", 0)
     success = result.get("approved", False)
     solved_environments = result.get("solved_environments", [])
-    print_final_summary(run_id, iterations, success, total_time)
+    print_final_summary(run_id, iterations, success, total_time, solved_environments)
     print(f"[bold green]📊 Statistics saved to output/{run_id}/statistics.json[/bold green]")
     
     # Save final conversation log summary

@@ -100,17 +100,17 @@ video:
 
 # Agent loop settings (reduced for faster iteration)
 agents:
-  max_iterations: 420
+  max_iterations: 240
   show_thinking: true  # Show agent thinking process (reasoning model output)
   show_coder_output: false  # Show the code that Coder generates (visually formatted)
   show_model_loading: false  # Show Ollama model load/unload debug messages (turn on for debugging)
   show_env_switch_chatter: true  # Show Manager's LinkedIn post and SHODAN's divine assessment when switching environments
   history_window:  # How many of their OWN previous messages each agent can see (siloed memory)
-    manager: 10    # Manager remembers strategies and decisions
+    manager: 3    # Manager remembers strategies and decisions
     coder: 0       # Coder has no memory - pure stateless executor
-    tester: 5      # Tester remembers recent testing patterns
-    reviewer: 20   # Reviewer has longest memory to maintain guidance consistency
-    env_switch_reports: 5  # How many previous "kierrosraportit" (environment completion reports) to include in context
+    tester: 3      # Tester remembers recent testing patterns
+    reviewer: 30   # Reviewer has longest memory to maintain guidance consistency
+    env_switch_reports: 3  # How many previous "kierrosraportit" (environment completion reports) to include in context
     agent_opinions: 100  # How many previous agent opinions/comments to show (enables cross-agent "dialogue")
 
   # Agent opinions - enables inter-agent commentary and "dialogue"
@@ -118,9 +118,9 @@ agents:
   # Creates evolving narrative as opinions chain through: Manager → Tester → Reviewer → Manager...
   agent_opinions:
     enabled: true  # Master switch for agent opinions feature
-    manager: true  # Manager shares opinion on team dynamics and strategy
+    manager: false  # Manager shares opinion on team dynamics and strategy
     coder: false   # Coder stays focused on code only (no opinions)
-    tester: true   # Tester shares opinion on code quality and testing experience
+    tester: false   # Tester shares opinion on code quality and testing experience
     reviewer: true # SHODAN shares... well, you know what SHODAN shares
 
 # LLM settings
@@ -129,10 +129,10 @@ llm:
 
 # LLM routing - which agent uses which model (starting model for each agent)
 agent_llm:
-  manager:  "api"
+  manager:  "huihui_ai/deepseek-r1-abliterated:32b"
   reviewer:  "api"
-  coder:   "api"
-  tester: "api"   
+  coder:   "qwen3-coder:30b"
+  tester: "deepseek-r1:32b"   
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu

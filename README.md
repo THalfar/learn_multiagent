@@ -107,19 +107,18 @@ prompts_file: "config/opus_prompts.yaml"
 test_name: "opus_prompts"
 ```
 
-Results are organized by test_name:
+Results are organized by `{test_name}_{timestamp}` with environment subdirectories:
 ```
 output/
-  original_prompts/
-    20250204_143000/
-      statistics.json
+  opus_prompts_20250204_150000/
+    CartPole-v1/
+      code/
       videos/
-    20250204_160000/
-      ...
-  opus_prompts/
-    20250204_150000/
-      statistics.json
+    Pendulum-v1/
+      code/
       videos/
+    statistics.json
+    conversation.txt
 ```
 
 ### Creating your own prompt set
