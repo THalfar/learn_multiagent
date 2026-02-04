@@ -116,14 +116,21 @@ class BaseAgent:
     """
     Base class for LangGraph agent nodes.
     Loads LLM, config, logger. Subclasses implement __call__(state) -> dict.
+
+    Supports adaptive model switching - when an agent gets stuck, the model
+    can be switched randomly to a different one from the pool.
     """
-    def __init__(self, config, agent_name: str):
+    def __init__(self, config, agent_name: str, model_switcher=None):
         self.config = config
         self.agent_name = agent_name
         self.logger = logging.getLogger(f"agent.{agent_name}")
-        
-        # Get model for this agent
-        model_name = getattr(config.agent_llm, agent_name, "api")
+        self.model_switcher = model_switcher
+
+        # Get model for this agent - check model_switcher first, then config
+        if model_switcher and model_switcher.get_current_model(agent_name):
+            model_name = model_switcher.get_current_model(agent_name)
+        else:
+            model_name = getattr(config.agent_llm, agent_name, "api")
         
         if model_name == "api":
             # Use Grok API from .env
@@ -347,11 +354,87 @@ class BaseAgent:
     def estimate_tokens(self, text: str) -> int:
         """Estimate token count (rough approximation: ~4 chars per token)"""
         return len(text) // 4
+
+    def switch_model(self, new_model: str):
+        """
+        Switch to a different model on-the-fly.
+        Used by adaptive model switching when agent gets stuck.
+        """
+        if new_model == self.model_name:
+            return  # Same model, no switch needed
+
+        console = Console()
+        console.print(f"[bold yellow]🔄 {self.agent_name.upper()} switching model: {self.model_name} → {new_model}[/bold yellow]")
+
+        # Unload current model
+        show_loading = getattr(self.config.agents, 'show_model_loading', False)
+        unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
+
+        # Setup new LLM
+        self.model_name = new_model
+
+        if new_model == "api":
+            # API model
+            self.llm = ChatOpenAI(
+                model=os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning"),
+                base_url=os.getenv("OPENAI_BASE_URL"),
+                api_key=os.getenv("OPENAI_API_KEY"),
+                temperature=0,
+                timeout=120.0
+            )
+        else:
+            # Ollama model - preload it
+            if show_loading:
+                console.print(f"[dim]Loading model {new_model}...[/dim]")
+            preload_start = time.time()
+            try:
+                base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                requests.post(
+                    f"{base_url}/api/generate",
+                    json={"model": new_model, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                    timeout=120
+                )
+                load_time = time.time() - preload_start
+                if show_loading:
+                    console.print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+
+            # Create new LLM instance
+            coder_max_tokens = 2500 if self.agent_name == "coder" else None
+            self.llm = ChatOpenAI(
+                model=new_model,
+                base_url=self.config.ollama.base_url,
+                api_key=self.config.ollama.api_key,
+                temperature=0.1,
+                timeout=300.0,
+                max_retries=2,
+                max_tokens=coder_max_tokens,
+            )
     
     def call_llm_timed(self, prompt, stats: 'RunStatistics', iteration: int):
         # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
             self._model_verified = True
+
+        # 🎲 CHAOS MODE - arvo malli JOKA kutsulla!
+        if self.model_switcher and self.model_switcher.chaos_mode:
+            chaos_model = self.model_switcher.get_chaos_model(self.agent_name)
+            if chaos_model and chaos_model != self.model_name:
+                # Vaihda malliin ilman raskaita logeja (get_chaos_model jo logittaa)
+                self.model_name = chaos_model
+                # Päivitä LLM instanssi
+                if chaos_model != "api":
+                    coder_max_tokens = 2500 if self.agent_name == "coder" else None
+                    self.llm = ChatOpenAI(
+                        model=chaos_model,
+                        base_url=self.config.ollama.base_url,
+                        api_key=self.config.ollama.api_key,
+                        temperature=0.1,
+                        timeout=300.0,
+                        max_retries=2,
+                        max_tokens=coder_max_tokens,
+                    )
 
         # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
@@ -510,24 +593,16 @@ class BaseAgent:
         agent_opinions_config = getattr(self.config.agents, 'agent_opinions', None)
         opinions_enabled = agent_opinions_config and getattr(agent_opinions_config, 'enabled', False)
 
-        # Use the actual formatted context if provided (accurate), otherwise estimate from raw state
+        # Use the actual formatted context if provided (accurate), otherwise 0
+        # If agent_opinions_context is empty string, it means this agent doesn't use team chatter
         if agent_opinions_context:
             opinions_tokens = self.estimate_tokens(agent_opinions_context)
             opinions_window = getattr(self.config.agents.history_window, 'agent_opinions', 8)
             opinions = state.get("agent_opinions", [])
             recent_opinions = opinions[-opinions_window:] if len(opinions) > opinions_window else opinions
             opinions_count = len(recent_opinions)
-        elif opinions_enabled:
-            opinions_window = getattr(self.config.agents.history_window, 'agent_opinions', 8)
-            opinions = state.get("agent_opinions", [])
-            recent_opinions = opinions[-opinions_window:] if len(opinions) > opinions_window else opinions
-            if recent_opinions:
-                opinions_text = "\n".join([op.get("opinion", "") for op in recent_opinions])
-                opinions_tokens = self.estimate_tokens(opinions_text) + 200  # overhead for formatting
-            else:
-                opinions_tokens = 0
-            opinions_count = len(recent_opinions)
         else:
+            # Agent doesn't use team chatter (e.g., coder passes "")
             opinions_tokens = 0
             opinions_count = 0
 
@@ -581,7 +656,8 @@ class BaseAgent:
         agent_colors = {"manager": "blue", "coder": "green", "tester": "yellow", "reviewer": "magenta"}
         color = agent_colors.get(self.agent_name, "white")
 
-        console.print(f"[dim]┌─ Context Breakdown ({self.agent_name.upper()}) ─────────────────────[/dim]")
+        console.print()  # Extra spacing before context breakdown
+        console.print(f"[{color}]┌─ Context Breakdown ({self.agent_name.upper()}) ─────────────────────[/{color}]")
 
         for comp in components:
             pct = (comp["tokens"] / context_size * 100) if context_size > 0 else 0
@@ -596,26 +672,27 @@ class BaseAgent:
             else:
                 comp_color = "dim"
 
-            console.print(f"[{comp_color}]│ {comp['icon']} {comp['name']:15} {comp['count']:3} {comp['unit']:8} │ {comp['tokens']:>6,} tok ({pct:4.1f}%) {bar}[/{comp_color}]")
+            console.print(f"[{color}]│[/{color}] [{comp_color}]{comp['icon']} {comp['name']:15} {comp['count']:3} {comp['unit']:8} │ {comp['tokens']:>6,} tok ({pct:4.1f}%) {bar}[/{comp_color}]")
 
         # Total
         total_pct = (total_tokens / context_size * 100) if context_size > 0 else 0
         remaining = context_size - total_tokens
 
-        console.print(f"[dim]├─────────────────────────────────────────────────────[/dim]")
+        console.print(f"[{color}]├─────────────────────────────────────────────────────[/{color}]")
 
-        # Total line with appropriate color
+        # Total line with appropriate color (but still use agent color for the │ border)
         if total_pct >= 60:
-            console.print(f"[bold yellow]│ 📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%) ⚠️[/bold yellow]")
-            console.print(f"[yellow]│ 🔓 Remaining: {remaining:,} tokens[/yellow]")
+            console.print(f"[{color}]│[/{color}] [bold yellow]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%) ⚠️[/bold yellow]")
+            console.print(f"[{color}]│[/{color}] [yellow]🔓 Remaining: {remaining:,} tokens[/yellow]")
         elif total_pct >= 40:
-            console.print(f"[yellow]│ 📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/yellow]")
-            console.print(f"[dim]│ 🔓 Remaining: {remaining:,} tokens[/dim]")
+            console.print(f"[{color}]│[/{color}] [yellow]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/yellow]")
+            console.print(f"[{color}]│[/{color}] [dim]🔓 Remaining: {remaining:,} tokens[/dim]")
         else:
-            console.print(f"[dim green]│ 📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/dim green]")
-            console.print(f"[dim]│ 🔓 Remaining: {remaining:,} tokens[/dim]")
+            console.print(f"[{color}]│[/{color}] [{color}]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/{color}]")
+            console.print(f"[{color}]│[/{color}] [dim]🔓 Remaining: {remaining:,} tokens[/dim]")
 
-        console.print(f"[dim]└─────────────────────────────────────────────────────[/dim]")
+        console.print(f"[{color}]└─────────────────────────────────────────────────────[/{color}]")
+        console.print()  # Extra spacing after context breakdown
 
         return total_tokens
 

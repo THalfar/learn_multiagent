@@ -8,8 +8,8 @@ import os
 console = Console()
 
 class Coder(BaseAgent):
-    def __init__(self, config):
-        super().__init__(config, "coder")
+    def __init__(self, config, model_switcher=None):
+        super().__init__(config, "coder", model_switcher=model_switcher)
 
     def _get_code_context(self, state: dict) -> str:
         """
@@ -96,8 +96,8 @@ class Coder(BaseAgent):
                 break
 
         # Build output
-        console.print("\n" + "─" * 70)
-        console.print(f"[bold cyan]🔧 CODER OUTPUT - Iteration {iteration}[/bold cyan]")
+        console.print("\n\n" + "─" * 70)
+        console.print(f"[bold green]🔧 CODER OUTPUT - Iteration {iteration}[/bold green]")
         console.print("─" * 70)
 
         # Stats line
@@ -134,6 +134,7 @@ class Coder(BaseAgent):
         """
         Check code quality and fix repetition loops.
         Deduplicates imports if model got stuck in a repetition loop.
+        Triggers adaptive model switch if repetition loops persist.
         """
         lines = code.splitlines()
 
@@ -145,6 +146,17 @@ class Coder(BaseAgent):
         if len(import_lines) > 30 and len(non_import_lines) < 5:
             console.print(f"[red]⚠️  REPETITION LOOP DETECTED: {len(import_lines)} imports, {len(non_import_lines)} code lines[/red]")
             console.print(f"[yellow]   Attempting to salvage by deduplicating imports...[/yellow]")
+
+            # Trigger adaptive model switch if enabled
+            if self.model_switcher:
+                from src.utils.model_switcher import SwitchTrigger
+                new_model = self.model_switcher.check_and_switch(
+                    self.agent_name,
+                    SwitchTrigger.REPETITION_LOOP,
+                    {"import_count": len(import_lines), "code_lines": len(non_import_lines)}
+                )
+                if new_model:
+                    self.switch_model(new_model)
 
             # Deduplicate imports while preserving order
             seen_imports = set()
@@ -189,6 +201,10 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
 
         if max_repeat >= 5:
             console.print(f"[yellow]⚠️  Note: Detected {max_repeat}x repeated line (possible loop)[/yellow]")
+        else:
+            # No repetition loop - clear the counter
+            if self.model_switcher:
+                self.model_switcher.report_success(self.agent_name)
 
         # Return code unchanged - let Python/tester catch actual errors
         return code
@@ -198,7 +214,7 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         iteration = state.get("iteration", 0)
         task = state.get("current_task", "")
         task_preview = task[:80] + "..." if len(task) > 80 else task
-        console.print(f"\n[dim]🔧 Coder working on: {task_preview}[/dim]")
+        console.print(f"\n\n[green]🔧 Coder working on: {task_preview}[/green]")
 
         prompt_dict = self.config.get_prompt("coder")
         
@@ -209,11 +225,20 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         # Get iteration for unique video subdirectory
         iteration = state.get("iteration", 0)
         
+        # Get device from current environment in progression
+        env_progression = self.config.environment_progression
+        current_env_index = state.get("current_env_index", 0)
+        current_env = env_progression[current_env_index] if env_progression and current_env_index < len(env_progression) else None
+
+        # Get device (cpu/gpu/auto) from environment config
+        device = current_env.device if current_env and hasattr(current_env, 'device') else "cpu"
+
         task_template = prompt_dict["task_template"].format(
             current_task=state.get("current_task", ""),
             environment=self.config.environment.name,
             video_dir=video_dir,
-            iteration=iteration
+            iteration=iteration,
+            device=device,
         )
         
         # Get code context (diff or random snippet)
@@ -272,11 +297,11 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
             task = state.get("current_task", "No task specified")
 
             # Show task summary first
-            console.print("\n" + "─" * 70)
-            console.print(f"[bold cyan]🔧 CODER - Iteration {iteration}[/bold cyan]")
+            console.print("\n\n" + "─" * 70)
+            console.print(f"[bold green]🔧 CODER - Iteration {iteration}[/bold green]")
             console.print("─" * 70)
             console.print(f"[yellow]Task:[/yellow] {task[:200]}{'...' if len(task) > 200 else ''}")
-            console.print(f"[dim]Generating complete Python script...[/dim]")
+            console.print(f"[green]Generating complete Python script...[/green]")
             console.print()
 
             # Create syntax-highlighted code

@@ -6,6 +6,7 @@ from .agents.manager import Manager
 from .agents.coder import Coder
 from .agents.tester import Tester
 from .agents.reviewer import Reviewer
+from .utils.model_switcher import ModelSwitcher
 import logging
 
 # Configure logging to be less verbose - only show warnings and errors
@@ -31,6 +32,7 @@ def create_graph(config: Config):
         manager_guidance: str  # Manager's intent/guidance for reviewer (what manager wanted)
         iteration: Annotated[int, operator.add]
         conversation_history: List[Dict[str, Any]]  # Siloed conversation history per agent
+        agent_opinions: List[Dict[str, Any]]  # Cross-agent "dialogue" - opinions/comments shared between agents
         run_id: str
         video_dir: str
         stats: Any
@@ -38,41 +40,62 @@ def create_graph(config: Config):
         current_env_index: int  # Index in environment_progression
         solved_environments: List[str]  # List of environment names that have been solved
         conversation_logger: Any  # Conversation logger instance
+        # Monivaiheinen treeni - vaihe per ympäristö
+        current_phase: str  # "validation" | "optimization" | "demo"
+        best_model_path: str  # Polku parhaaseen malliin (optimization-vaiheesta)
     
     def should_continue(state: AgentState) -> str:
         # Check if manager said DONE
         if state.get("current_task", "").upper() == "DONE":
             return "end"
-        
-        # If approved, check if there are more environments to solve
+
+        current_phase = state.get("current_phase", "validation")
+
+        # If approved, handle phase transitions
         if state.get("approved", False):
             env_progression = config.environment_progression
             current_env_index = state.get("current_env_index", 0)
             solved_environments = state.get("solved_environments", [])
-            
-            # If there are more environments, continue to manager (which will switch environments)
-            if env_progression and current_env_index + 1 < len(env_progression):
-                # Check if current environment is already in solved list
-                # If not, manager will add it and switch to next
-                current_env = env_progression[current_env_index]
-                if current_env.name not in solved_environments:
-                    # Continue to manager to handle environment switch
-                    return "manager"
-            
-            # All environments solved or no more environments, end the run
-            return "end"
-        
+
+            # MONIVAIHEINEN LOGIIKKA:
+            # validation -> optimization -> demo -> seuraava env
+            if current_phase == "validation":
+                # Validation OK -> siirry optimization-vaiheeseen
+                print(f"[bold green]✅ VALIDATION PASSED - Moving to OPTIMIZATION phase[/bold green]")
+                return "manager"  # Manager vaihtaa vaiheen
+
+            elif current_phase == "optimization":
+                # Optimization OK (threshold saavutettu) -> siirry demo-vaiheeseen
+                print(f"[bold green]✅ OPTIMIZATION COMPLETE - Moving to DEMO phase[/bold green]")
+                return "manager"  # Manager vaihtaa vaiheen
+
+            elif current_phase == "demo":
+                # Demo OK -> siirry seuraavaan ympäristöön
+                print(f"[bold green]✅ DEMO COMPLETE - Environment SOLVED![/bold green]")
+
+                # If there are more environments, continue
+                if env_progression and current_env_index + 1 < len(env_progression):
+                    current_env = env_progression[current_env_index]
+                    if current_env.name not in solved_environments:
+                        return "manager"  # Manager vaihtaa ympäristön
+
+                # All environments solved
+                return "end"
+
         # Check iteration limit
         if state.get("iteration", 0) >= config.agents.max_iterations:
             return "end"
-        
+
         return "manager"
 
-    # Instantiate agents
-    manager = Manager(config)
-    coder = Coder(config)
-    tester = Tester(config)
-    reviewer = Reviewer(config)
+    # Create model switcher for adaptive model switching
+    model_switcher = ModelSwitcher(config)
+
+    # Instantiate agents with model_switcher (except reviewer which stays on API)
+    manager = Manager(config, model_switcher=model_switcher)
+    coder = Coder(config, model_switcher=model_switcher)
+    tester = Tester(config, model_switcher=model_switcher)
+    reviewer = Reviewer(config)  # Reviewer stays on API - no model_switcher
 
     workflow = StateGraph(AgentState)
     workflow.add_node("manager", manager)

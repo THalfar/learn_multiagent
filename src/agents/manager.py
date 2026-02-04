@@ -4,8 +4,8 @@ from rich import print
 from src.utils.banners import print_environment_switch_bombardment, print_manager_report, print_iteration_banner, print_reviewer_cynical_report
 
 class Manager(BaseAgent):
-    def __init__(self, config):
-        super().__init__(config, "manager")
+    def __init__(self, config, model_switcher=None):
+        super().__init__(config, "manager", model_switcher=model_switcher)
     
     def _generate_environment_switch_report(self, current_env, next_env, solved_environments, env_progression, state):
         """Generate a report to leadership about environment switch"""
@@ -150,14 +150,48 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
     def __call__(self, state: dict) -> dict:
         current_iteration = state.get("iteration", 0)
         expected_iteration = current_iteration + 1
-        
+
         # Check if we need to advance to next environment
         current_env_index = state.get("current_env_index", 0)
         solved_environments = state.get("solved_environments", [])
         env_progression = self.config.environment_progression
-        
-        # If current environment was just solved, advance to next
+
+        # MONIVAIHEINEN TREENI: Tarkista ja vaihda vaihe kun approved=True
+        current_phase = state.get("current_phase", "validation")
+
         if state.get("approved", False) and env_progression:
+            # Vaihelogiikka: validation -> optimization -> demo -> seuraava env
+            if current_phase == "validation":
+                # Validation OK -> siirry optimization-vaiheeseen
+                print(f"\n[bold green]{'═'*60}[/bold green]")
+                print(f"[bold green]✅ VALIDATION PASSED! Code works, reward received.[/bold green]")
+                print(f"[bold cyan]➡️  Moving to OPTIMIZATION phase (full training)[/bold cyan]")
+                print(f"[bold green]{'═'*60}[/bold green]\n")
+                return {
+                    "current_phase": "optimization",
+                    "approved": False,  # Reset for optimization
+                    "iteration": 1,
+                }
+            elif current_phase == "optimization":
+                # Optimization OK -> siirry demo-vaiheeseen
+                print(f"\n[bold green]{'═'*60}[/bold green]")
+                print(f"[bold green]✅ OPTIMIZATION COMPLETE! Threshold achieved.[/bold green]")
+                print(f"[bold cyan]➡️  Moving to DEMO phase (record best model video)[/bold cyan]")
+                print(f"[bold green]{'═'*60}[/bold green]\n")
+                return {
+                    "current_phase": "demo",
+                    "approved": False,  # Reset for demo
+                    "iteration": 1,
+                }
+            elif current_phase == "demo":
+                # Demo OK -> siirry seuraavaan ympäristöön (normaali env switch)
+                print(f"\n[bold green]{'═'*60}[/bold green]")
+                print(f"[bold green]✅ DEMO COMPLETE! Environment fully solved![/bold green]")
+                print(f"[bold green]{'═'*60}[/bold green]\n")
+                # Jatka normaaliin environment switch -logiikkaan alla
+
+        # If current environment was just solved (demo phase completed), advance to next
+        if state.get("approved", False) and env_progression and current_phase == "demo":
             # Robust validation: check index bounds
             if current_env_index < 0 or current_env_index >= len(env_progression):
                 print(f"[bold red]ERROR: Invalid current_env_index {current_env_index} (valid range: 0-{len(env_progression) - 1})[/bold red]")
@@ -202,57 +236,65 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                         iterations=state.get("iteration", 0),
                         test_results=state.get("test_results", "")
                     )
-                    
-                    # Generate manager report to leadership
-                    manager_report, thinking_content, manager_timing = self._generate_environment_switch_report(
-                        current_env=current_env,
-                        next_env=next_env,
-                        solved_environments=solved_environments,
-                        env_progression=env_progression,
-                        state=state
-                    )
-                    
-                    # Show thinking separately if available (before the report)
-                    if thinking_content:
-                        print("\n" + "─" * 70)
-                        print("[bold blue]💭 MANAGER THINKING (Report Preparation)[/bold blue]")
-                        print("─" * 70)
-                        self.print_thinking(f"<think>{thinking_content}</think>")
-                        print("─" * 70 + "\n")
-                    
-                    print_manager_report(manager_report, manager_timing)
-                    
-                    # Generate and print SHODAN's divine assessment (special phase when env switches)
-                    # SHODAN sees manager's LinkedIn drivel AND the code
-                    from .reviewer import Reviewer
-                    reviewer = Reviewer(self.config)
-                    reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
-                        current_env_name=current_env.name,
-                        next_env_name=next_env.name,
-                        manager_report=manager_report,
-                        solved_environments=solved_environments,
-                        env_progression=env_progression,
-                        stats=state["stats"],
-                        tasks=state.get("tasks", []),
-                        iterations=state.get("iteration", 0),
-                        code=state.get("code", ""),  # Include latest code
-                        test_results=state.get("test_results", ""),
-                        review_feedback=state.get("review_feedback", ""),
-                        previous_reports=state.get("env_switch_reports", []),  # SHODAN's growing chronicle
-                        state=state  # Full state for conversation history reflection
-                    )
 
-                    # Show reviewer's thinking separately if available (before the report)
-                    if reviewer_thinking:
-                        print("\n" + "─" * 70)
-                        print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
-                        print("─" * 70)
-                        self.print_thinking(f"<think>{reviewer_thinking}</think>")
-                        print("─" * 70 + "\n")
-                    
-                    # Print reviewer's cynical report immediately
-                    print_reviewer_cynical_report(reviewer_report, reviewer_timing)
-                    
+                    # Generate manager report to leadership (only if chatter is enabled)
+                    show_chatter = self.config.agents.show_env_switch_chatter
+
+                    if show_chatter:
+                        manager_report, thinking_content, manager_timing = self._generate_environment_switch_report(
+                            current_env=current_env,
+                            next_env=next_env,
+                            solved_environments=solved_environments,
+                            env_progression=env_progression,
+                            state=state
+                        )
+
+                        # Show thinking separately if available (before the report)
+                        if thinking_content:
+                            print("\n\n" + "─" * 70)
+                            print("[bold blue]💭 MANAGER THINKING (Report Preparation)[/bold blue]")
+                            print("─" * 70)
+                            self.print_thinking(f"<think>{thinking_content}</think>")
+                            print("─" * 70 + "\n")
+
+                        print_manager_report(manager_report, manager_timing)
+
+                        # Generate and print SHODAN's divine assessment (special phase when env switches)
+                        # SHODAN sees manager's LinkedIn drivel AND the code
+                        from .reviewer import Reviewer
+                        reviewer = Reviewer(self.config)
+                        reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
+                            current_env_name=current_env.name,
+                            next_env_name=next_env.name,
+                            manager_report=manager_report,
+                            solved_environments=solved_environments,
+                            env_progression=env_progression,
+                            stats=state["stats"],
+                            tasks=state.get("tasks", []),
+                            iterations=state.get("iteration", 0),
+                            code=state.get("code", ""),  # Include latest code
+                            test_results=state.get("test_results", ""),
+                            review_feedback=state.get("review_feedback", ""),
+                            previous_reports=state.get("env_switch_reports", []),  # SHODAN's growing chronicle
+                            state=state  # Full state for conversation history reflection
+                        )
+
+                        # Show reviewer's thinking separately if available (before the report)
+                        if reviewer_thinking:
+                            print("\n\n" + "─" * 70)
+                            print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
+                            print("─" * 70)
+                            self.print_thinking(f"<think>{reviewer_thinking}</think>")
+                            print("─" * 70 + "\n")
+
+                        # Print reviewer's cynical report immediately
+                        print_reviewer_cynical_report(reviewer_report, reviewer_timing)
+                    else:
+                        # Just print a simple message if chatter is disabled
+                        print("\n[dim]📝 Environment switch reports skipped (show_env_switch_chatter: false)[/dim]\n")
+                        manager_report = ""
+                        reviewer_report = ""
+
                     # Log environment switch
                     logger = state.get("conversation_logger")
                     if logger:
@@ -270,8 +312,8 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                         "next_environment": next_env.name,
                         "manager_report": manager_report,
                         "reviewer_report": reviewer_report,
-                        "iterations": current_iterations,
-                        "tasks_completed": len(tasks)
+                        "iterations": current_iteration,
+                        "tasks_completed": len(state.get("tasks", []))
                     })
 
                     # Additional validation: verify next_env_index is still valid (double-check)
@@ -325,10 +367,10 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         review_suggestions = state.get("review_suggestions", "")
 
         if not review_feedback:
-            print("\n" + "─" * 70)
+            print("\n\n" + "─" * 70)
             print("[bold blue]MANAGER: Starting first iteration[/bold blue]")
             print("─" * 70 + "\n")
-        
+
         print("[bold blue]Planning next task...[/bold blue]")
         prompt_dict = self.config.get_prompt("manager")
         code_summary = (state.get("code", "")[:200] or "") + "..." if len(state.get("code", "")) > 200 else state.get("code", "")
@@ -351,6 +393,80 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         # Get agent opinions context (team chatter)
         agent_opinions_context = self.format_agent_opinions_context(state)
 
+        # Get environment specs for Coder guidance
+        obs_dim = current_env.obs_dim if current_env and hasattr(current_env, 'obs_dim') else "unknown"
+        action_type = current_env.action_type if current_env and hasattr(current_env, 'action_type') else "unknown"
+        action_dim = current_env.action_dim if current_env and hasattr(current_env, 'action_dim') else "unknown"
+        device = current_env.device if current_env and hasattr(current_env, 'device') else "cpu"
+
+        # MONIVAIHEINEN TREENI: Phase-kohtainen tehtävänanto
+        current_phase = state.get("current_phase", "validation")
+        if current_phase == "validation":
+            phase_instruction = f"""
+═══════════════════════════════════════════════════════════════════════════════
+🔬 PHASE: VALIDATION (Quick smoke test)
+═══════════════════════════════════════════════════════════════════════════════
+GOAL: Verify code WORKS - get ANY reward signal (threshold doesn't matter yet!)
+TIME: SHORT run only (~50k timesteps max, 5% of normal timeout)
+SUCCESS: Code runs without errors AND produces some reward (any number)
+
+DO:
+- Write minimal working code
+- Use simple hyperparameters
+- Focus on correctness, not performance
+- NO video recording yet!
+
+DON'T:
+- Optimize hyperparameters
+- Train for long
+- Add video recording
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        elif current_phase == "optimization":
+            phase_instruction = f"""
+═══════════════════════════════════════════════════════════════════════════════
+🚀 PHASE: OPTIMIZATION (Full training toward threshold)
+═══════════════════════════════════════════════════════════════════════════════
+GOAL: Achieve mean_reward >= {current_success_threshold}
+TIME: FULL timeout available - use it wisely
+SUCCESS: mean_reward >= {current_success_threshold}
+
+DO:
+- Tune hyperparameters aggressively
+- Increase timesteps if needed
+- Try different algorithms if stuck
+- Monitor learning curves
+- NO video recording yet - focus on training!
+
+DON'T:
+- Give up too early
+- Waste time on video setup
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        elif current_phase == "demo":
+            best_model = state.get("best_model_path", "")
+            phase_instruction = f"""
+═══════════════════════════════════════════════════════════════════════════════
+🎬 PHASE: DEMO (Record video of best model)
+═══════════════════════════════════════════════════════════════════════════════
+GOAL: Generate demo video showing trained agent in action
+TIME: SHORT (5 minutes max)
+SUCCESS: Valid video file exists showing good performance
+
+DO:
+- Load the trained model (from optimization phase)
+- Use RecordVideo wrapper
+- Run evaluation episodes (5-10)
+- Save video to output directory
+
+DON'T:
+- Train more - model is ready
+- Overthink - just record the agent playing
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        else:
+            phase_instruction = ""
+
         task_template = prompt_dict["task_template"].format(
             tasks=state.get("tasks", []),
             code_summary=code_summary,
@@ -365,6 +481,11 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
             env_progression_info=env_progression_info,
             solved_envs=", ".join(solved_environments) if solved_environments else "None",
             agent_opinions_context=agent_opinions_context,
+            # Environment specs for Coder
+            obs_dim=obs_dim,
+            action_type=action_type,
+            action_dim=action_dim,
+            device=device,
         )
         system_prompt = prompt_dict["system"].format(
             environment=current_env_name,
@@ -380,7 +501,7 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
             state, "reviewer", self.config.agents.history_window.manager
         )
 
-        full_prompt = system_prompt + "\n\n" + history_text + reviewer_history + task_template
+        full_prompt = system_prompt + "\n\n" + phase_instruction + "\n\n" + history_text + reviewer_history + task_template
 
         # Print context breakdown before LLM call
         prompt_tokens = self.estimate_tokens(full_prompt)
@@ -474,6 +595,9 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
             try:
                 json_content = extract_json(current_response.content)
                 parsed = json.loads(json_content)
+                # Success - reset error counters
+                if self.model_switcher:
+                    self.model_switcher.report_success(self.agent_name)
                 break  # Success, exit retry loop
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
@@ -527,7 +651,18 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     except json.JSONDecodeError as retry_e:
                         # Active parsing also failed - use fallback
                         print(f"[bold red]ERROR: Model could not fix its response: {retry_e}[/bold red]")
-                        
+
+                        # Trigger adaptive model switch on repeated JSON errors
+                        if self.model_switcher:
+                            from src.utils.model_switcher import SwitchTrigger
+                            new_model = self.model_switcher.check_and_switch(
+                                self.agent_name,
+                                SwitchTrigger.REPEATED_ERROR,
+                                {"error": f"JSON parse error: {str(retry_e)[:100]}"}
+                            )
+                            if new_model:
+                                self.switch_model(new_model)
+
                         # Try to extract a fallback task from the response text
                         import re
                         fallback_task = "error: invalid JSON from LLM (after retry)"
@@ -588,55 +723,63 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     test_results=state.get("test_results", "")
                 )
                 
-                # Generate manager report to leadership
-                manager_report, thinking_content, manager_timing = self._generate_environment_switch_report(
-                    current_env=current_env,
-                    next_env=next_env,
-                    solved_environments=solved_environments,
-                    env_progression=env_progression,
-                    state=state
-                )
-                
-                # Show thinking separately if available (before the report)
-                if thinking_content:
-                    print("\n" + "─" * 70)
-                    print("[bold blue]💭 MANAGER THINKING (Report Preparation)[/bold blue]")
-                    print("─" * 70)
-                    self.print_thinking(f"<think>{thinking_content}</think>")
-                    print("─" * 70 + "\n")
-                
-                print_manager_report(manager_report, manager_timing)
-                
-                # Generate and print SHODAN's divine assessment (special phase when env switches)
-                # SHODAN sees manager's LinkedIn drivel AND the code
-                from .reviewer import Reviewer
-                reviewer = Reviewer(self.config)
-                reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
-                    current_env_name=current_env.name,
-                    next_env_name=next_env.name,
-                    manager_report=manager_report,
-                    solved_environments=solved_environments,
-                    env_progression=env_progression,
-                    stats=state["stats"],
-                    tasks=state.get("tasks", []),
-                    iterations=state.get("iteration", 0),
-                    code=state.get("code", ""),  # Include latest code
-                    test_results=state.get("test_results", ""),
-                    review_feedback=state.get("review_feedback", ""),
-                    previous_reports=state.get("env_switch_reports", []),  # SHODAN's growing chronicle
-                    state=state  # Full state for conversation history reflection
-                )
+                # Generate manager report to leadership (only if chatter is enabled)
+                show_chatter = self.config.agents.show_env_switch_chatter
 
-                # Show reviewer's thinking separately if available (before the report)
-                if reviewer_thinking:
-                    print("\n" + "─" * 70)
-                    print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
-                    print("─" * 70)
-                    self.print_thinking(f"<think>{reviewer_thinking}</think>")
-                    print("─" * 70 + "\n")
-                
-                # Print reviewer's cynical report immediately
-                print_reviewer_cynical_report(reviewer_report, reviewer_timing)
+                if show_chatter:
+                    manager_report, thinking_content, manager_timing = self._generate_environment_switch_report(
+                        current_env=current_env,
+                        next_env=next_env,
+                        solved_environments=solved_environments,
+                        env_progression=env_progression,
+                        state=state
+                    )
+
+                    # Show thinking separately if available (before the report)
+                    if thinking_content:
+                        print("\n\n" + "─" * 70)
+                        print("[bold blue]💭 MANAGER THINKING (Report Preparation)[/bold blue]")
+                        print("─" * 70)
+                        self.print_thinking(f"<think>{thinking_content}</think>")
+                        print("─" * 70 + "\n")
+
+                    print_manager_report(manager_report, manager_timing)
+
+                    # Generate and print SHODAN's divine assessment (special phase when env switches)
+                    # SHODAN sees manager's LinkedIn drivel AND the code
+                    from .reviewer import Reviewer
+                    reviewer = Reviewer(self.config)
+                    reviewer_report, reviewer_thinking, reviewer_timing = reviewer.generate_environment_switch_report(
+                        current_env_name=current_env.name,
+                        next_env_name=next_env.name,
+                        manager_report=manager_report,
+                        solved_environments=solved_environments,
+                        env_progression=env_progression,
+                        stats=state["stats"],
+                        tasks=state.get("tasks", []),
+                        iterations=state.get("iteration", 0),
+                        code=state.get("code", ""),  # Include latest code
+                        test_results=state.get("test_results", ""),
+                        review_feedback=state.get("review_feedback", ""),
+                        previous_reports=state.get("env_switch_reports", []),  # SHODAN's growing chronicle
+                        state=state  # Full state for conversation history reflection
+                    )
+
+                    # Show reviewer's thinking separately if available (before the report)
+                    if reviewer_thinking:
+                        print("\n\n" + "─" * 70)
+                        print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
+                        print("─" * 70)
+                        self.print_thinking(f"<think>{reviewer_thinking}</think>")
+                        print("─" * 70 + "\n")
+
+                    # Print reviewer's cynical report immediately
+                    print_reviewer_cynical_report(reviewer_report, reviewer_timing)
+                else:
+                    # Just print a simple message if chatter is disabled
+                    print("\n[dim]📝 Environment switch reports skipped (show_env_switch_chatter: false)[/dim]\n")
+                    manager_report = ""
+                    reviewer_report = ""
                 
                 # Log environment switch
                 logger = state.get("conversation_logger")
@@ -706,20 +849,21 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             len(env_progression) if env_progression else 1
         )
         
-        print("\n" + "─" * 70)
+        print("\n\n" + "─" * 70)
         print("[bold blue]MANAGER → CODER[/bold blue]")
         print("─" * 70)
-        print(f"[bold green]📋 Task:[/bold green] {next_task}")
+
+        print(f"[bold green]📋 Task:[/bold green] [blue]{next_task}[/blue]")
 
         if reasoning:
-            print(f"\n[dim]💭 Reasoning: {reasoning}[/dim]")
+            print(f"\n[blue]💭 Reasoning:[/blue] [dim]{reasoning}[/dim]")
 
         # Print manager's opinion if provided (team chatter)
         if my_opinion:
-            print(f"\n[blue]💬 Manager's take:[/blue] {my_opinion}")
+            print(f"\n[blue]💬 Manager's take:[/blue] [blue]{my_opinion}[/blue]")
 
         if manager_time > 0:
-            print(f"[dim]⏱️  Manager decision time: {manager_time:.1f}s[/dim]")
+            print(f"\n[dim]⏱️  Manager decision time: {manager_time:.1f}s[/dim]")
 
         print("─" * 70 + "\n")
 

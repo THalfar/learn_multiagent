@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+import sys
 
 load_dotenv()
 
@@ -12,7 +13,8 @@ from src.utils.conversation_logger import ConversationLogger
 from rich import print
 
 if __name__ == "__main__":
-    config = load_config()
+    project_path = sys.argv[1] if len(sys.argv) > 1 else "config/project.yaml"
+    config = load_config(project_path=project_path)
     app = create_graph(config)
 
     run_id = f"{config.test_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -43,11 +45,15 @@ if __name__ == "__main__":
         "manager_guidance": "",  # Manager's intent/guidance for reviewer
         "iteration": 0,
         "conversation_history": [],  # Renamed from "messages" to avoid LangGraph collision
+        "agent_opinions": [],  # Cross-agent "dialogue" - opinions/comments shared between agents
         "stats": stats,
         "approved": False,
         "current_env_index": 0,  # Start with first environment
         "solved_environments": [],  # No environments solved yet
         "conversation_logger": conversation_logger,  # Add logger to state
+        # Monivaiheinen treeni: validation -> optimization -> demo
+        "current_phase": "validation",  # Aloitetaan aina validoinnilla
+        "best_model_path": "",  # Polku parhaaseen malliin (täytetään optimization-vaiheessa)
     }
     
     # Print run start banner

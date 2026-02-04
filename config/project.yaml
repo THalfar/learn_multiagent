@@ -1,48 +1,96 @@
 # Gymnasium environment progression (easy to hard)
 # Agent starts with first environment, optimizes it, then moves to next
 # Classic Control environments for faster iteration
+#
+# DEVICE SELECTION (cpu vs gpu):
+#   cpu  = Pienet ympäristöt, triviaalit MLP:t - CPU on nopeampi kuin GPU overhead
+#   gpu  = Isot ympäristöt, monimutkaiset policyt - GPU:n parallelismi auttaa
+#   auto = Rajatapaus, järjestelmä valitsee (default: cpu pienillä batch size, gpu isoilla)
+#
 environment_progression:
+
   - name: "CartPole-v1"
     max_episode_steps: 500
     success_threshold: 475  # Official threshold: 475.0 over 100 episodes
-    execution_timeout: 600  # 10 minutes (Classic Control environments are fast)
+    execution_timeout: 300  # 5 minutes (Classic Control environments are fast)
+    obs_dim: 4
+    action_type: "discrete"
+    action_dim: 2
+    device: "cpu"
+
   - name: "CartPole-v0"
     max_episode_steps: 200
     success_threshold: 195  # Official threshold: 195.0 over 100 episodes (easier than v1)
-    execution_timeout: 600  # 10 minutes - quick warmup task
+    execution_timeout: 300  # 5 minutes - quick warmup task
+    obs_dim: 4
+    action_type: "discrete"
+    action_dim: 2
+    device: "cpu"
+
   - name: "Pendulum-v1"
     max_episode_steps: 200
     success_threshold: -300  # Good performance: -200 to -300 (reward range: -1600 to -200)
-    execution_timeout: 600  # 10 minutes
+    execution_timeout: 300  # 5 minutes
+    obs_dim: 3
+    action_type: "continuous"
+    action_dim: 1
+    device: "cpu"
+
   - name: "MountainCarContinuous-v0"
     max_episode_steps: 999
     success_threshold: 90  # Official threshold: 90.0 over 100 episodes (continuous version is easier)
-    execution_timeout: 600  # 10 minutes - easier than discrete version
+    execution_timeout: 300  # 5 minutes - easier than discrete version
+    obs_dim: 2
+    action_type: "continuous"
+    action_dim: 1
+    device: "cpu"
+
   - name: "Acrobot-v1"
     max_episode_steps: 500
     success_threshold: -100  # Official threshold: -100.0 over 100 episodes
     execution_timeout: 600  # 10 minutes
+    obs_dim: 6
+    action_type: "discrete"
+    action_dim: 3
+    device: "cpu"
+
   - name: "MountainCar-v0"
     max_episode_steps: 200
     success_threshold: -110  # Official threshold: -110.0 over 100 episodes (HARD - sparse rewards!)
     execution_timeout: 600  # 10 minutes
+    obs_dim: 2
+    action_type: "discrete"
+    action_dim: 3
+    device: "cpu"
+
   - name: "LunarLander-v2"
     max_episode_steps: 1000
     success_threshold: 200  # Official threshold: 200.0 over 100 episodes (reward range: -250 to +250)
     execution_timeout: 1800  # 30 minutes (Box2D environments are slower)
+    obs_dim: 8
+    action_type: "discrete"
+    action_dim: 4
+    device: "auto"
+
   - name: "BipedalWalker-v3"
     max_episode_steps: 1600
     success_threshold: 300  # Official threshold: 300.0 over 100 episodes (reward range: -100 to 300+)
     execution_timeout: 2400  # 40 minutes (complex continuous control)
-  - name: "BipedalWalkerHardcore-v3"
-    max_episode_steps: 2000
-    success_threshold: 300  # Official threshold: 300.0 over 100 episodes
-    execution_timeout: 3600 # 60 min - this is THE challenge for classic RL
+    obs_dim: 24
+    action_type: "continuous"
+    action_dim: 4
+    device: "cpu"
+
  
 # Current environment (will be set automatically, starting from first)
+# Device field controls whether RL training uses CPU or GPU
 environment:
   name: "CartPole-v1"
   max_episode_steps: 500
+  obs_dim: 4
+  action_type: "discrete"
+  action_dim: 2
+  device: "cpu"
 
 # Video recording
 video:
@@ -50,19 +98,20 @@ video:
   output_dir: "output/videos"
   record_frequency: 10000
 
-# Agent loop settings (reduced for faster iteration)jo
+# Agent loop settings (reduced for faster iteration)
 agents:
   max_iterations: 420
   show_thinking: true  # Show agent thinking process (reasoning model output)
-  show_coder_output: true  # Show the code that Coder generates (visually formatted)
+  show_coder_output: false  # Show the code that Coder generates (visually formatted)
   show_model_loading: false  # Show Ollama model load/unload debug messages (turn on for debugging)
+  show_env_switch_chatter: true  # Show Manager's LinkedIn post and SHODAN's divine assessment when switching environments
   history_window:  # How many of their OWN previous messages each agent can see (siloed memory)
     manager: 10    # Manager remembers strategies and decisions
     coder: 0       # Coder has no memory - pure stateless executor
     tester: 5      # Tester remembers recent testing patterns
-    reviewer: 15   # Reviewer has longest memory to maintain guidance consistency
+    reviewer: 20   # Reviewer has longest memory to maintain guidance consistency
     env_switch_reports: 5  # How many previous "kierrosraportit" (environment completion reports) to include in context
-    agent_opinions: 8  # How many previous agent opinions/comments to show (enables cross-agent "dialogue")
+    agent_opinions: 100  # How many previous agent opinions/comments to show (enables cross-agent "dialogue")
 
   # Agent opinions - enables inter-agent commentary and "dialogue"
   # When true, agents share their personal take on the situation
@@ -78,16 +127,105 @@ agents:
 llm:
   model: "grok-4-1-fast-reasoning"
 
-# LLM routing - which agent uses which model
+# LLM routing - which agent uses which model (starting model for each agent)
 agent_llm:
-  manager:  "deepseek-r1:32b"  
-  reviewer:  "api" 
-  coder:   "deepseek-r1:32b"  
-  tester: "deepseek-r1:32b"  
+  manager:  "api"
+  reviewer:  "api"
+  coder:   "api"
+  tester: "api"   
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu
+# ═══════════════════════════════════════════════════════════════════════════════
+# Transhumanistinen kokeilu: 🔓 abliterated vs 🔒 normaali
+# Miten "vapautettu ajattelu" vaikuttaa ongelmanratkaisuun?
+#
+# Triggerit:
+#   - Sama virhe toistuu N kertaa
+#   - Reward ei parane N iteraatiossa
+#   - Repetition loop (Coder)
+#   - Timeout toistuu
+#
+adaptive_model_switching:
+  enabled: false
+
+  # 🎲 CHAOS MODE - arpoo mallin JOKA kutsulla poolista!
+  # Maksimi emergenssi: eri malli, eri "persoonallisuus" joka kerta
+  # Historia pysyy mutta ajattelija vaihtuu -> mitä tapahtuu?
+  chaos_mode: false
+
+  # Triggerit mallin vaihdolle
+  triggers:
+    repeated_error_threshold: 1      # Sama virhe N kertaa -> vaihda
+    no_improvement_iterations: 2     # Reward ei parane N iteraatiossa -> vaihda
+    repetition_loop_threshold: 1     # N peräkkäistä repetition loopia -> vaihda
+    timeout_threshold: 1             # N peräkkäistä timeoutia -> vaihda
+
+  # Mallipoolit per agentti - valitaan SATUNNAISESTI kun jumi
+  # 🔓 = abliterated (vapautettu), 🔒 = normaali
+  # TASAMÄÄRÄ: 2 abliterated + 2 normaalia per agentti = reilu kokeilu!
+  model_pools:
+    coder:
+      models:        
+        # - "qwen3-coder:30b"                       # 🔒 ~18GB - koodaaja
+        # - "qwen2.5-coder:14b"                     # 🔒 ~9GB - kevyt koodaaja        
+        # - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
+        - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
+        # - "deepseek-r1:32b"
+        # - "phi4"
+        # - "gemma2:9b" # 🔒 ~9GB - kevyt
+        # - "starcoder2:15b"
+      
+
+    manager:
+      models:
+        
+        # - "deepseek-r1:32b"
+        # - "qwq:32b"                               # 🔒 ~19GB - reasoning        
+        # - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
+        - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
+        # - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
+      
+
+    tester:
+      models:
+        
+        - "deepseek-r1:32b"                       # 🔒 ~19GB - reasoning
+        # - "qwq:32b"                               # 🔒 ~19GB - reasoning        
+        # - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
+        # - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
+        # - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
+        # - "phi4"
+        
+        
+
+    # reviewer: EI POOLIA - pysyy API:na (SHODAN)  
 
 # Ollama settings (used for all non-api models)
 ollama:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"
 
-test_name: "classic_control_fast"
+# GPU/VRAM settings for RL training
+gpu:
+  enabled: true              # Use GPU for RL training in Docker
+  max_vram_gb: 4.0           # Max VRAM for RL model (reject if exceeds) - RL models are tiny, 4GB is plenty
+  warn_vram_gb: 2.0          # Warn if VRAM usage exceeds this
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MONIVAIHEINEN TREENI - Ei tuhlata 2h jos koodi ei toimi!
+# ═══════════════════════════════════════════════════════════════════════════════
+# Vaihe 1: VALIDATION - Lyhyt smoke test (toimiiko koodi?)
+# Vaihe 2: OPTIMIZATION - Pitkä treeni (saavutetaanko threshold?)
+# Vaihe 3: DEMO - Video parhaasta mallista
+#
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.02  # 5% normaalista (2h -> 6min)
+  demo_timeout_seconds: 300            # 5 min max demo-videolle
+
+# Prompts YAML file - which prompt set to use for this run
+# Swap this to use different prompt configurations (e.g. prompts_v2.yaml, prompts_aggressive.yaml)
+prompts_file: "config/opus_prompts.yaml"
+
+test_name: "opust_prompts"

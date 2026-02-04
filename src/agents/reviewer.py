@@ -11,15 +11,15 @@ class Reviewer(BaseAgent):
         print_agent_transition("tester", "reviewer")
         
         # Show what reviewer sees (the smartest agent sees everything)
-        print("\n" + "─" * 70)
+        print("\n\n" + "─" * 70)
         print("[bold magenta]REVIEWER: Analyzing full picture[/bold magenta]")
         print("─" * 70)
-        print("[dim]Reviewer sees: Code + Tester's analysis + Manager's guidance[/dim]")
-        
+        print("[magenta]Reviewer sees: Code + Tester's analysis + Manager's guidance[/magenta]")
+
         manager_guidance = state.get("manager_guidance", "")
         if manager_guidance:
             print(f"\n[blue]Manager's intent:[/blue] {manager_guidance}")
-        
+
         test_results = state.get("test_results", "")
         if test_results:
             print(f"\n[yellow]Tester's analysis (from outputs only):[/yellow] {test_results}")
@@ -28,7 +28,7 @@ class Reviewer(BaseAgent):
         tester_response = state.get("tester_reviewer_response", "")
         if tester_response:
             print(f"\n[cyan]📬 Tester's response to your request:[/cyan] {tester_response}")
-        
+
         print("\n[bold magenta]Reviewing code, tester analysis, and manager intent...[/bold magenta]")
         print("─" * 70 + "\n")
         
@@ -51,6 +51,69 @@ class Reviewer(BaseAgent):
         # Get tester's response to previous SHODAN request
         tester_response = state.get("tester_reviewer_response", "No specific response")
 
+        # MONIVAIHEINEN TREENI: Phase-aware arviointikriteerit
+        current_phase = state.get("current_phase", "validation")
+        if current_phase == "validation":
+            phase_criteria = f"""
+═══════════════════════════════════════════════════════════════════════════════
+🔬 PHASE: VALIDATION - Approve if code WORKS (threshold doesn't matter!)
+═══════════════════════════════════════════════════════════════════════════════
+APPROVE (approved: true) when:
+✓ Code runs without fatal errors
+✓ Environment loads correctly
+✓ Agent produces SOME reward (any number - even negative is OK!)
+✓ Training loop executes
+
+REJECT (approved: false) when:
+✗ Import errors
+✗ Runtime crashes
+✗ Environment fails to load
+✗ No reward output at all
+
+DO NOT CARE ABOUT:
+- Reward value (threshold irrelevant in validation)
+- Video recording (not needed yet)
+- Hyperparameter quality
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        elif current_phase == "optimization":
+            phase_criteria = f"""
+═══════════════════════════════════════════════════════════════════════════════
+🚀 PHASE: OPTIMIZATION - Approve if threshold ({success_threshold}) achieved!
+═══════════════════════════════════════════════════════════════════════════════
+APPROVE (approved: true) when:
+✓ mean_reward >= {success_threshold}
+✓ Training completed successfully
+✓ Code quality acceptable
+
+REJECT (approved: false) when:
+✗ mean_reward < {success_threshold} (keep training!)
+✗ Training errors
+✗ Reward not improving
+
+DO NOT CARE ABOUT:
+- Video recording (not needed yet - save time for training)
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        elif current_phase == "demo":
+            phase_criteria = f"""
+═══════════════════════════════════════════════════════════════════════════════
+🎬 PHASE: DEMO - Approve if valid video recorded!
+═══════════════════════════════════════════════════════════════════════════════
+APPROVE (approved: true) when:
+✓ Valid video file exists (> 1KB, proper format)
+✓ Video shows trained agent behavior
+✓ No recording errors
+
+REJECT (approved: false) when:
+✗ No video file found
+✗ Video file corrupt/empty
+✗ RecordVideo errors
+═══════════════════════════════════════════════════════════════════════════════
+"""
+        else:
+            phase_criteria = ""
+
         prompt_dict = self.config.get_prompt("reviewer")
         task_template = prompt_dict["task_template"].format(
             manager_guidance=manager_guidance,
@@ -69,7 +132,7 @@ class Reviewer(BaseAgent):
         # Add conversation history (siloed - only this agent's previous messages)
         history_text = self.format_conversation_history(state)
 
-        full_prompt = system_prompt + "\n\n" + history_text + task_template
+        full_prompt = system_prompt + "\n\n" + phase_criteria + "\n\n" + history_text + task_template
 
         # Print context breakdown before LLM call
         prompt_tokens = self.estimate_tokens(full_prompt)
@@ -289,16 +352,16 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 tester_instruction = None
         
         # Print reviewer verdict and communication to manager
-        print("\n" + "─" * 70)
+        print("\n\n" + "─" * 70)
         print("[bold magenta]REVIEWER → MANAGER[/bold magenta]")
         print("─" * 70)
-        
+
         if approved:
             print("[bold green]VERDICT: APPROVED[/bold green]")
         else:
             print("[bold yellow]VERDICT: NEEDS IMPROVEMENT[/bold yellow]")
-        
-        print(f"\n[magenta]{feedback}[/magenta]")
+
+        print(f"\n[magenta]{feedback}[/magenta]\n")
         
         if suggestions:
             print(f"\n[yellow]Bug fixes to relay to Coder:[/yellow]")
@@ -329,12 +392,13 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         total_time = iter_stats["total_time"]
         agent_times = iter_stats["agents"]
         agent_tokens = iter_stats.get("agent_tokens", {})
-        
-        print(f"\n⏱️  Iteration {iteration} complete in {total_time:.1f}s")
-        print(f"   Manager: {agent_times.get('manager', 0):.1f}s | Coder: {agent_times.get('coder', 0):.1f}s | Tester: {agent_times.get('tester', 0):.1f}s | Reviewer: {agent_times.get('reviewer', 0):.1f}s")
+
+        print(f"\n\n⏱️  Iteration {iteration} complete in {total_time:.1f}s")
+        print(f"   [blue]Manager:[/blue] {agent_times.get('manager', 0):.1f}s | [green]Coder:[/green] {agent_times.get('coder', 0):.1f}s | [yellow]Tester:[/yellow] {agent_times.get('tester', 0):.1f}s | [magenta]Reviewer:[/magenta] {agent_times.get('reviewer', 0):.1f}s")
         
         # Token statistics for this iteration
         if agent_tokens:
+            agent_colors = {"manager": "blue", "coder": "green", "tester": "yellow", "reviewer": "magenta"}
             token_lines = []
             for agent in ["manager", "coder", "tester", "reviewer"]:
                 if agent in agent_tokens:
@@ -342,8 +406,9 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     tokens_in = tokens.get("tokens_in", 0)
                     tokens_out = tokens.get("tokens_out", 0)
                     if tokens_in > 0 or tokens_out > 0:
-                        token_lines.append(f"{agent.capitalize()}: {tokens_in:,}→{tokens_out:,}")
-            
+                        color = agent_colors.get(agent, "white")
+                        token_lines.append(f"[{color}]{agent.capitalize()}:[/{color}] {tokens_in:,}→{tokens_out:,}")
+
             if token_lines:
                 print(f"   🔢 Tokens: {' | '.join(token_lines)}")
 
