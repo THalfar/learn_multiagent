@@ -747,7 +747,7 @@ class Tester(BaseAgent):
         if current_phase == "validation":
             # Validation: lyhyt timeout (5% normaalista tai konfiguraatiosta)
             multiplier = getattr(training_phases, 'validation_timeout_multiplier', 0.05) if training_phases else 0.05
-            execution_timeout = max(60, int(base_timeout * multiplier))  # Min 60s
+            execution_timeout = max(10, int(base_timeout * multiplier))  # Min 10s (smoke test)
             print(f"[bold cyan]🔬 VALIDATION PHASE: Quick test (timeout: {execution_timeout}s = {multiplier*100:.0f}% of {base_timeout}s)[/bold cyan]")
         elif current_phase == "optimization":
             # Optimization: täysi timeout

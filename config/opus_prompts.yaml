@@ -167,6 +167,7 @@ coder:
     - Example: model = PPO("MlpPolicy", env, verbose=0, device="cpu")
 
     VECENV RULES:
+    - IMPORT: from stable_baselines3.common.env_util import make_vec_env (NOT from vec_env!)
     - make_vec_env returns batched arrays: obs shape is (n_envs, obs_dim)
     - model.predict(obs) works with batched obs - do NOT index obs[0]
     - Only index rewards[0] and dones[0] for episode tracking
@@ -189,11 +190,12 @@ coder:
     REMEMBER:
     - Start with "import os". No markdown.
     - NO tensorboard_log parameter (NOT INSTALLED - will crash!)
+    - Import: from stable_baselines3.common.env_util import make_vec_env (NOT from vec_env!)
     - After training, ALWAYS evaluate and print:
       from stable_baselines3.common.evaluation import evaluate_policy
       mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100)
       print(f"RESULT: mean_reward={{mean_reward:.2f}}, std_reward={{std_reward:.2f}}, episodes=100")
-    - Save model: model.save("/workspace/output/iter_{iteration}/model")
+    - Do NOT use model.save() unless the task explicitly asks for it
 
     Write Python code. Start with "import os". No markdown.
 

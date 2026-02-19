@@ -5,7 +5,8 @@
       "Bash(wc:*)",
       "Bash(python:*)",
       "Bash(curl:*)",
-      "Bash(conda run -n langgraph-rl python:*)"
+      "Bash(conda run -n langgraph-rl python:*)",
+      "Bash(docker run:*)"
     ]
   }
 }
