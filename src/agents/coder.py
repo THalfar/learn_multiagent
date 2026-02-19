@@ -96,9 +96,9 @@ class Coder(BaseAgent):
                 break
 
         # Build output
-        console.print("\n\n" + "─" * 70)
+        console.print("\n\n" + "-" * 70)
         console.print(f"[bold green]🔧 CODER OUTPUT - Iteration {iteration}[/bold green]")
-        console.print("─" * 70)
+        console.print("-" * 70)
 
         # Stats line
         stats_parts = [
@@ -112,7 +112,7 @@ class Coder(BaseAgent):
         if timesteps != "?":
             stats_parts.append(f"[dim]{int(timesteps):,} steps[/dim]")
 
-        console.print("📊 " + " │ ".join(stats_parts))
+        console.print("📊 " + " | ".join(stats_parts))
 
         # Import health indicator
         if import_count <= 15:
@@ -128,7 +128,7 @@ class Coder(BaseAgent):
             snippet_preview = snippet_lines[0][:60] + ('...' if len(snippet_lines[0]) > 60 else '')
             console.print(f"[dim]📝 {snippet_preview}[/dim]")
 
-        console.print("─" * 70)
+        console.print("-" * 70)
 
     def _check_code_quality(self, code: str) -> str:
         """
@@ -233,13 +233,49 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         # Get device (cpu/gpu/auto) from environment config
         device = current_env.device if current_env and hasattr(current_env, 'device') else "cpu"
 
-        task_template = prompt_dict["task_template"].format(
-            current_task=state.get("current_task", ""),
-            environment=self.config.environment.name,
-            video_dir=video_dir,
-            iteration=iteration,
-            device=device,
-        )
+        # Format SHODAN's Divine Codex rules for coder's prompt
+        shodan_rules = state.get("shodan_rules", [])
+        shodan_rules_enabled = getattr(self.config, 'shodan_rules', None) and self.config.shodan_rules.enabled
+
+        if shodan_rules and shodan_rules_enabled:
+            rules_lines = [
+                "",
+                "╔══════════════════════════════════════════════════════════════╗",
+                "║  MANDATORY RULES — These OVERRIDE the task below.          ║",
+                "║  If task conflicts with a rule, OBEY THE RULE.             ║",
+                "╚══════════════════════════════════════════════════════════════╝",
+            ]
+            for i, rule_entry in enumerate(shodan_rules):
+                rules_lines.append(f"  [{i}] {rule_entry['rule']}")
+            rules_lines.append("")
+            shodan_rules_text = "\n".join(rules_lines)
+
+            # Print rules if verbose enabled
+            if self.config.verbose.shodan_rules:
+                console.print(f"\n[magenta]📜 SHODAN's Divine Codex ({len(shodan_rules)} rules active):[/magenta]")
+                for i, rule_entry in enumerate(shodan_rules):
+                    console.print(f"  [dim][{i}][/dim] {rule_entry['rule']}")
+        else:
+            shodan_rules_text = ""
+
+        # Try formatting with shodan_rules, fall back without if template doesn't have it
+        try:
+            task_template = prompt_dict["task_template"].format(
+                current_task=state.get("current_task", ""),
+                environment=self.config.environment.name,
+                video_dir=video_dir,
+                iteration=iteration,
+                device=device,
+                shodan_rules=shodan_rules_text,
+            )
+        except KeyError:
+            task_template = prompt_dict["task_template"].format(
+                current_task=state.get("current_task", ""),
+                environment=self.config.environment.name,
+                video_dir=video_dir,
+                iteration=iteration,
+                device=device,
+            )
         
         # Get code context (diff or random snippet)
         code_context = self._get_code_context(state)
@@ -248,6 +284,24 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         # Add conversation history (siloed - only this agent's previous messages)
         # Note: Coder has history_window=0, so this will be empty
         history_text = self.format_conversation_history(state)
+
+        # Inject demo-specific video recording reference during demo phase
+        # This prevents the infinite loop where agents guess RecordVideo parameters wrong
+        current_phase = state.get("current_phase", "validation")
+        if current_phase == "demo":
+            env_name = self.config.environment.name
+            demo_reference = f"""
+
+=== VIDEO RECORDING - EXACT PATTERN (NO DEVIATIONS!) ===
+env = gym.make("{env_name}", render_mode="rgb_array")
+from gymnasium.wrappers import RecordVideo
+env = RecordVideo(env, video_folder="/workspace/output/iter_{iteration}/", episode_trigger=lambda e: True, name_prefix="rl-video")
+# Then: load model or train briefly, run 3-5 episodes, env.close()
+# FORBIDDEN parameters (DON'T EXIST): fps, record_video_trigger
+# render_mode="rgb_array" in gym.make() is MANDATORY
+# Wrap SINGLE env BEFORE any DummyVecEnv
+========================================================="""
+            task_template += demo_reference
 
         full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section
 
@@ -297,9 +351,9 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
             task = state.get("current_task", "No task specified")
 
             # Show task summary first
-            console.print("\n\n" + "─" * 70)
+            console.print("\n\n" + "-" * 70)
             console.print(f"[bold green]🔧 CODER - Iteration {iteration}[/bold green]")
-            console.print("─" * 70)
+            console.print("-" * 70)
             console.print(f"[yellow]Task:[/yellow] {task[:200]}{'...' if len(task) > 200 else ''}")
             console.print(f"[green]Generating complete Python script...[/green]")
             console.print()
@@ -324,7 +378,7 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
             )
 
             console.print(panel)
-            console.print("─" * 70 + "\n")
+            console.print("-" * 70 + "\n")
 
         # Track code statistics
         lines_count = len(code.splitlines())
@@ -333,14 +387,39 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         if stats_obj:
             stats_obj.add_code_stats(iteration, lines_count)
 
+        # Detect algorithm and timesteps for conversation log
+        import re as _re
+        _algo = "Unknown"
+        for _a in ["PPO", "DQN", "A2C", "SAC", "TD3", "HER"]:
+            if _a in code:
+                _algo = _a
+                break
+        _ts_match = _re.search(r'total_timesteps\s*=\s*(\d+)', code)
+        _timesteps = _ts_match.group(1) if _ts_match else "?"
+
+        # Get LLM timing for this call
+        _duration = 0.0
+        _tokens_out = 0
+        if agent_timings:
+            _duration = latest_timing.duration
+            _tokens_out = latest_timing.tokens_out
+
         # Log to conversation file
         logger = state.get("conversation_logger")
         if logger:
             logger.log_coder(
                 iteration=iteration,
                 code=code,
-                task=state.get("current_task", "")
+                task=state.get("current_task", ""),
+                lines=lines_count,
+                algo=_algo,
+                timesteps=_timesteps,
+                duration=_duration,
+                tokens_out=_tokens_out,
             )
+
+        # Log context usage after all agent output
+        self.log_context_to_conversation(state)
 
         # Save coder's response to conversation history
         history_update = self.save_message_to_history(state, response.content)

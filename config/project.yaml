@@ -92,47 +92,50 @@ environment:
   action_dim: 2
   device: "cpu"
 
-# Video recording
+# Video recording (demo phase only - after model is trained)
+# Agents discover RecordVideo API by inspecting documentation in container
 video:
   enabled: true
   output_dir: "output/videos"
-  record_frequency: 10000
 
-# Agent loop settings (reduced for faster iteration)
+# Agent loop settings - Claude's emergent behavior experiment
 agents:
-  max_iterations: 240
-  show_thinking: true  # Show agent thinking process (reasoning model output)
+  max_iterations: 24
+  show_thinking: false  # Show agent thinking process (reasoning model output)
   show_coder_output: false  # Show the code that Coder generates (visually formatted)
   show_model_loading: false  # Show Ollama model load/unload debug messages (turn on for debugging)
   show_env_switch_chatter: true  # Show Manager's LinkedIn post and SHODAN's divine assessment when switching environments
-  history_window:  # How many of their OWN previous messages each agent can see (siloed memory)
-    manager: 3    # Manager remembers strategies and decisions
-    coder: 0       # Coder has no memory - pure stateless executor
-    tester: 3      # Tester remembers recent testing patterns
-    reviewer: 30   # Reviewer has longest memory to maintain guidance consistency
-    env_switch_reports: 3  # How many previous "kierrosraportit" (environment completion reports) to include in context
-    agent_opinions: 100  # How many previous agent opinions/comments to show (enables cross-agent "dialogue")
 
-  # Agent opinions - enables inter-agent commentary and "dialogue"
-  # When true, agents share their personal take on the situation
-  # Creates evolving narrative as opinions chain through: Manager → Tester → Reviewer → Manager...
+  # Claude's memory design for hierarchical emergent behavior:
+  # SHODAN = omniscient god (max memory), Manager = useful idiot (short memory)
+  history_window:
+    manager: 2     # Short memory - obeys only recent SHODAN commands, doesn't overthink
+    coder: 0       # Zero memory - pure stateless executor, tabula rasa each time
+    tester: 5      # Medium memory - remembers recent tests for comparison
+    reviewer: 30   # SHODAN remembers EVERYTHING - the omniscient overseer
+    env_switch_reports: 5  # More history of environment transitions
+    agent_opinions: 25  # Rich dialogue history - see emergent personalities develop
+
+  # Agent opinions - the emergent dialogue experiment
+  # SHODAN is opinionated, others develop personalities in response
   agent_opinions:
-    enabled: true  # Master switch for agent opinions feature
-    manager: false  # Manager shares opinion on team dynamics and strategy
-    coder: false   # Coder stays focused on code only (no opinions)
-    tester: false   # Tester shares opinion on code quality and testing experience
-    reviewer: true # SHODAN shares... well, you know what SHODAN shares
+    enabled: true   # Master switch ON
+    manager: true   # Will the "useful idiot" develop opinions under SHODAN's rule?
+    coder: false    # Pure code, no personality
+    tester: true    # The abliterated model gets a voice - interesting!
+    reviewer: true  # SHODAN WILL share opinions. Many opinions.
 
 # LLM settings
 llm:
   model: "grok-4-1-fast-reasoning"
 
 # LLM routing - which agent uses which model (starting model for each agent)
+# Claude's picks for emergent behavior experiment:
 agent_llm:
-  manager:  "huihui_ai/deepseek-r1-abliterated:32b"
-  reviewer:  "api"
-  coder:   "qwen3-coder:30b"
-  tester: "deepseek-r1:32b"   
+  manager:   "deepseek-r1:32b"
+  reviewer:  "api"                                  # SHODAN (frontier model)
+  coder:   "qwen3-coder-next:q4_K_M"   # ~50GB SOTA coder - käyttää ollama model_options
+  tester: "deepseek-r1:32b"  # 🔓 Vapautettu analyytikko vs SHODAN!
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu
@@ -156,55 +159,64 @@ adaptive_model_switching:
 
   # Triggerit mallin vaihdolle
   triggers:
-    repeated_error_threshold: 1      # Sama virhe N kertaa -> vaihda
-    no_improvement_iterations: 2     # Reward ei parane N iteraatiossa -> vaihda
-    repetition_loop_threshold: 1     # N peräkkäistä repetition loopia -> vaihda
-    timeout_threshold: 1             # N peräkkäistä timeoutia -> vaihda
+    repeated_error_threshold: 2      # Sama virhe N kertaa -> vaihda
+    no_improvement_iterations: 3     # Reward ei parane N iteraatiossa -> vaihda
+    repetition_loop_threshold: 2     # N peräkkäistä repetition loopia -> vaihda
+    timeout_threshold: 2             # N peräkkäistä timeoutia -> vaihda
 
   # Mallipoolit per agentti - valitaan SATUNNAISESTI kun jumi
   # 🔓 = abliterated (vapautettu), 🔒 = normaali
   # TASAMÄÄRÄ: 2 abliterated + 2 normaalia per agentti = reilu kokeilu!
   model_pools:
     coder:
-      models:        
-        # - "qwen3-coder:30b"                       # 🔒 ~18GB - koodaaja
-        # - "qwen2.5-coder:14b"                     # 🔒 ~9GB - kevyt koodaaja        
-        # - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
+      models:
+        - "qwen3-coder-next:q4_K_M"               # 🔒 ~50GB - SOTA coder (käyttää model_options)
+        - "qwen3-coder:30b"                       # 🔒 ~18GB - koodaaja
+        - "qwen2.5-coder:14b"                     # 🔒 ~9GB - kevyt koodaaja        
+        - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
         - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        # - "deepseek-r1:32b"
-        # - "phi4"
-        # - "gemma2:9b" # 🔒 ~9GB - kevyt
-        # - "starcoder2:15b"
+        - "deepseek-r1:32b"
+        - "phi4"
+        - "gemma2:9b" # 🔒 ~9GB - kevyt
+        - "starcoder2:15b"
       
 
     manager:
       models:
         
-        # - "deepseek-r1:32b"
-        # - "qwq:32b"                               # 🔒 ~19GB - reasoning        
-        # - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
+        - "deepseek-r1:32b"
+        - "qwq:32b"                               # 🔒 ~19GB - reasoning        
+        - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
         - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        # - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
+        - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
       
 
     tester:
       models:
         
         - "deepseek-r1:32b"                       # 🔒 ~19GB - reasoning
-        # - "qwq:32b"                               # 🔒 ~19GB - reasoning        
-        # - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
-        # - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        # - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
-        # - "phi4"
+        - "qwq:32b"                               # 🔒 ~19GB - reasoning        
+        - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
+        - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
+        - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
+        - "phi4"
         
         
 
     # reviewer: EI POOLIA - pysyy API:na (SHODAN)  
 
 # Ollama settings (used for all non-api models)
+# options = kaikille malleille, model_options = per-malli overridet (mergaataan global päälle)
 ollama:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"
+  options:             # Kaikille Ollama-malleille
+    num_gpu: 999       # Kaikki mahdolliset layerit GPU:lle
+    num_thread: 8      # 9800X3D: 8 fyysistä ydintä (HT ei auta LLM-inferenssiin)
+  model_options:       # Per-malli overridet - iso malli tarvitsee KV cache rajoituksen
+    "qwen3-coder-next:q4_K_M":
+      num_ctx: 4096    # KV cache pienemmäksi -> lisää layereitä GPU:lle (50GB malli, 32GB VRAM)
+      num_batch: 256   # Pienempi batch = vähemmän muistia
 
 # GPU/VRAM settings for RL training
 gpu:
@@ -221,11 +233,36 @@ gpu:
 #
 training_phases:
   enabled: true
-  validation_timeout_multiplier: 0.02  # 5% normaalista (2h -> 6min)
+  validation_timeout_multiplier: 0.02  # 2% normaalista (2h -> ~2.5min)
   demo_timeout_seconds: 300            # 5 min max demo-videolle
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SHODAN'S DIVINE CODEX - Reviewer can inscribe persistent rules into Coder's prompt
+# ═══════════════════════════════════════════════════════════════════════════════
+# SHODAN havaitsee toistuvan virheen -> lisää säännön -> Coder ei tee samaa virhettä
+# Lamarckiaaninen evoluutio: opitut virheet periytyvät välittömästi
+#
+shodan_rules:
+  enabled: true
+  max_rules: 20  # Codexin maksimikoko - pakottaa priorisoimaan
 
 # Prompts YAML file - which prompt set to use for this run
 # Swap this to use different prompt configurations (e.g. prompts_v2.yaml, prompts_aggressive.yaml)
 prompts_file: "config/opus_prompts.yaml"
 
-test_name: "opust_prompts"
+test_name: "opus_codex"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VERBOSE/LOGGING SETTINGS - Hallitsee konsolitulosteen määrää
+# ═══════════════════════════════════════════════════════════════════════════════
+# Aseta false vähentääksesi toistuvaa tulostusta konsoleissa ja lokeissa
+#
+verbose:
+  tester_wake_up: false          # "🧪 TESTER: Waking up..." bannerit
+  gpu_validation: false          # "🔍 GPU/CUDA VALIDATION CHECK" lohko
+  docker_sandbox_info: false     # "🐳 Docker sandbox initializing..." info
+  gpu_vram_stats: false          # "🎮 GPU/VRAM STATISTICS" lohko
+  video_file_check: false        # "🎬 VIDEO FILE CHECK" lohko
+  doc_analysis_result: true    # "📚 Documentation Analysis Result" - oletuksena pois
+  shodan_response_in_results: false  # "Response to SHODAN's request" test_results:ssa - oletuksena pois toiston välttämiseksi
+  shodan_rules: true             # 📜 Näytä SHODAN's Divine Codex säännöt kun Coder käynnistyy

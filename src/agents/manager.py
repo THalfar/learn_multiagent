@@ -163,10 +163,15 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
             # Vaihelogiikka: validation -> optimization -> demo -> seuraava env
             if current_phase == "validation":
                 # Validation OK -> siirry optimization-vaiheeseen
-                print(f"\n[bold green]{'═'*60}[/bold green]")
+                print(f"\n[bold green]{'='*60}[/bold green]")
                 print(f"[bold green]✅ VALIDATION PASSED! Code works, reward received.[/bold green]")
                 print(f"[bold cyan]➡️  Moving to OPTIMIZATION phase (full training)[/bold cyan]")
-                print(f"[bold green]{'═'*60}[/bold green]\n")
+                print(f"[bold green]{'='*60}[/bold green]\n")
+                # Log phase transition to conversation markdown
+                logger = state.get("conversation_logger")
+                if logger:
+                    _env_name = env_progression[current_env_index].name if env_progression and current_env_index < len(env_progression) else "unknown"
+                    logger.log_phase_transition("validation", "optimization", _env_name)
                 return {
                     "current_phase": "optimization",
                     "approved": False,  # Reset for optimization
@@ -174,10 +179,15 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                 }
             elif current_phase == "optimization":
                 # Optimization OK -> siirry demo-vaiheeseen
-                print(f"\n[bold green]{'═'*60}[/bold green]")
+                print(f"\n[bold green]{'='*60}[/bold green]")
                 print(f"[bold green]✅ OPTIMIZATION COMPLETE! Threshold achieved.[/bold green]")
                 print(f"[bold cyan]➡️  Moving to DEMO phase (record best model video)[/bold cyan]")
-                print(f"[bold green]{'═'*60}[/bold green]\n")
+                print(f"[bold green]{'='*60}[/bold green]\n")
+                # Log phase transition to conversation markdown
+                logger = state.get("conversation_logger")
+                if logger:
+                    _env_name = env_progression[current_env_index].name if env_progression and current_env_index < len(env_progression) else "unknown"
+                    logger.log_phase_transition("optimization", "demo", _env_name)
                 return {
                     "current_phase": "demo",
                     "approved": False,  # Reset for demo
@@ -185,9 +195,9 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                 }
             elif current_phase == "demo":
                 # Demo OK -> siirry seuraavaan ympäristöön (normaali env switch)
-                print(f"\n[bold green]{'═'*60}[/bold green]")
+                print(f"\n[bold green]{'='*60}[/bold green]")
                 print(f"[bold green]✅ DEMO COMPLETE! Environment fully solved![/bold green]")
-                print(f"[bold green]{'═'*60}[/bold green]\n")
+                print(f"[bold green]{'='*60}[/bold green]\n")
                 # Jatka normaaliin environment switch -logiikkaan alla
 
         # If current environment was just solved (demo phase completed), advance to next
@@ -251,11 +261,11 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
 
                         # Show thinking separately if available (before the report)
                         if thinking_content:
-                            print("\n\n" + "─" * 70)
+                            print("\n\n" + "-" * 70)
                             print("[bold blue]💭 MANAGER THINKING (Report Preparation)[/bold blue]")
-                            print("─" * 70)
+                            print("-" * 70)
                             self.print_thinking(f"<think>{thinking_content}</think>")
-                            print("─" * 70 + "\n")
+                            print("-" * 70 + "\n")
 
                         print_manager_report(manager_report, manager_timing)
 
@@ -281,11 +291,11 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
 
                         # Show reviewer's thinking separately if available (before the report)
                         if reviewer_thinking:
-                            print("\n\n" + "─" * 70)
+                            print("\n\n" + "-" * 70)
                             print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
-                            print("─" * 70)
+                            print("-" * 70)
                             self.print_thinking(f"<think>{reviewer_thinking}</think>")
-                            print("─" * 70 + "\n")
+                            print("-" * 70 + "\n")
 
                         # Print reviewer's cynical report immediately
                         print_reviewer_cynical_report(reviewer_report, reviewer_timing)
@@ -376,9 +386,9 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         review_suggestions = state.get("review_suggestions", "")
 
         if not review_feedback:
-            print("\n\n" + "─" * 70)
+            print("\n\n" + "-" * 70)
             print("[bold blue]MANAGER: Starting first iteration[/bold blue]")
-            print("─" * 70 + "\n")
+            print("-" * 70 + "\n")
 
         print("[bold blue]Planning next task...[/bold blue]")
         prompt_dict = self.config.get_prompt("manager")
@@ -412,9 +422,9 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         current_phase = state.get("current_phase", "validation")
         if current_phase == "validation":
             phase_instruction = f"""
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 🔬 PHASE: VALIDATION (Quick smoke test)
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 GOAL: Verify code WORKS - get ANY reward signal (threshold doesn't matter yet!)
 TIME: SHORT run only (~50k timesteps max, 5% of normal timeout)
 SUCCESS: Code runs without errors AND produces some reward (any number)
@@ -424,18 +434,21 @@ DO:
 - Use simple hyperparameters
 - Focus on correctness, not performance
 - NO video recording yet!
+- Code MUST print "RESULT: mean_reward=X, std_reward=Y, episodes=Z"
 
 DON'T:
 - Optimize hyperparameters
 - Train for long
 - Add video recording
-═══════════════════════════════════════════════════════════════════════════════
+- Use tensorboard_log (NOT INSTALLED!)
+- Use EvalCallback or Monitor wrapper
+===============================================================================
 """
         elif current_phase == "optimization":
             phase_instruction = f"""
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 🚀 PHASE: OPTIMIZATION (Full training toward threshold)
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 GOAL: Achieve mean_reward >= {current_success_threshold}
 TIME: FULL timeout available - use it wisely
 SUCCESS: mean_reward >= {current_success_threshold}
@@ -444,34 +457,45 @@ DO:
 - Tune hyperparameters aggressively
 - Increase timesteps if needed
 - Try different algorithms if stuck
-- Monitor learning curves
+- Code MUST print "RESULT: mean_reward=X, std_reward=Y, episodes=Z"
 - NO video recording yet - focus on training!
 
 DON'T:
 - Give up too early
 - Waste time on video setup
-═══════════════════════════════════════════════════════════════════════════════
+- Use tensorboard_log (NOT INSTALLED!)
+- Use EvalCallback or Monitor wrapper
+===============================================================================
 """
         elif current_phase == "demo":
             best_model = state.get("best_model_path", "")
             phase_instruction = f"""
-═══════════════════════════════════════════════════════════════════════════════
-🎬 PHASE: DEMO (Record video of best model)
-═══════════════════════════════════════════════════════════════════════════════
-GOAL: Generate demo video showing trained agent in action
+===============================================================================
+🎬 PHASE: DEMO (Record video of trained agent)
+===============================================================================
+GOAL: Record a .mp4 video of the agent playing the environment
 TIME: SHORT (5 minutes max)
-SUCCESS: Valid video file exists showing good performance
+SUCCESS: Valid .mp4 video file >1KB exists in output directory
 
-DO:
-- Load the trained model (from optimization phase)
-- Use RecordVideo wrapper
-- Run evaluation episodes (5-10)
-- Save video to output directory
+TELL THE CODER TO USE THIS EXACT PATTERN:
+  1. env = gym.make("{current_env_name}", render_mode="rgb_array")
+     ^^^ render_mode="rgb_array" is MANDATORY!
+  2. from gymnasium.wrappers import RecordVideo
+     env = RecordVideo(env, video_folder="/workspace/output/iter_N/",
+         episode_trigger=lambda e: True, name_prefix="rl-video")
+  3. Train briefly (50k steps) OR load saved model
+  4. Run 3-5 evaluation episodes
+  5. env.close()
 
-DON'T:
-- Train more - model is ready
-- Overthink - just record the agent playing
-═══════════════════════════════════════════════════════════════════════════════
+CRITICAL API RULES:
+- RecordVideo parameters: video_folder, episode_trigger, name_prefix
+- NO fps parameter (DOESN'T EXIST!)
+- NO record_video_trigger (OLD API - DOESN'T EXIST!)
+- Wrap SINGLE env BEFORE DummyVecEnv, not after
+- If no saved model exists, retrain briefly (50k steps is fast)
+
+DO NOT let the Coder guess the API. Give them the EXACT pattern above.
+===============================================================================
 """
         else:
             phase_instruction = ""
@@ -690,7 +714,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         next_task = parsed.get("next_task", "No task decided")
         reasoning = parsed.get("reasoning", "")
         switch_environment = parsed.get("switch_environment", False)
-        my_opinion = parsed.get("my_opinion", "")  # Manager's personal take
+        # NOTE: my_opinion removed from JSON - now comes from separate chat call
         
         # Check if manager explicitly requested environment switch
         if switch_environment and env_progression:
@@ -746,11 +770,11 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
 
                     # Show thinking separately if available (before the report)
                     if thinking_content:
-                        print("\n\n" + "─" * 70)
+                        print("\n\n" + "-" * 70)
                         print("[bold blue]💭 MANAGER THINKING (Report Preparation)[/bold blue]")
-                        print("─" * 70)
+                        print("-" * 70)
                         self.print_thinking(f"<think>{thinking_content}</think>")
-                        print("─" * 70 + "\n")
+                        print("-" * 70 + "\n")
 
                     print_manager_report(manager_report, manager_timing)
 
@@ -776,11 +800,11 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
 
                     # Show reviewer's thinking separately if available (before the report)
                     if reviewer_thinking:
-                        print("\n\n" + "─" * 70)
+                        print("\n\n" + "-" * 70)
                         print("[bold magenta]💭 REVIEWER THINKING (Environment Switch Assessment)[/bold magenta]")
-                        print("─" * 70)
+                        print("-" * 70)
                         self.print_thinking(f"<think>{reviewer_thinking}</think>")
-                        print("─" * 70 + "\n")
+                        print("-" * 70 + "\n")
 
                     # Print reviewer's cynical report immediately
                     print_reviewer_cynical_report(reviewer_report, reviewer_timing)
@@ -867,23 +891,21 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             len(env_progression) if env_progression else 1
         )
         
-        print("\n\n" + "─" * 70)
+        print("\n\n" + "-" * 70)
         print("[bold blue]MANAGER → CODER[/bold blue]")
-        print("─" * 70)
+        print("-" * 70)
 
         print(f"[bold green]📋 Task:[/bold green] [blue]{next_task}[/blue]")
 
         if reasoning:
             print(f"\n[blue]💭 Reasoning:[/blue] [dim]{reasoning}[/dim]")
 
-        # Print manager's opinion if provided (team chatter)
-        if my_opinion:
-            print(f"\n[blue]💬 Manager's take:[/blue] [blue]{my_opinion}[/blue]")
+        # NOTE: Manager's opinion now comes from separate chat call after work is done
 
         if manager_time > 0:
             print(f"\n[dim]⏱️  Manager decision time: {manager_time:.1f}s[/dim]")
 
-        print("─" * 70 + "\n")
+        print("-" * 70 + "\n")
 
         # Log to conversation file
         logger = state.get("conversation_logger")
@@ -915,8 +937,31 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         # Save manager's response to conversation history
         history_update = self.save_message_to_history(state, response.content)
 
-        # Save manager's opinion to state for team chatter
-        opinion_update = self.save_opinion_to_state(state, my_opinion) if my_opinion else {}
+        # === CHAT CALL: Generate opinion AFTER work is done ===
+        # Work first, chat second - separate LLM call for team chatter
+        previous_results = state.get("test_results", "No previous results yet")
+        if len(previous_results) > 500:
+            previous_results = previous_results[:500] + "..."
+
+        chat_context = {
+            "environment": current_env_name,
+            "current_task": next_task,
+            "iteration": expected_iteration,
+            "reasoning": clean_reasoning or reasoning or "No reasoning provided",
+            "previous_results": previous_results,
+        }
+        prompts = self.config.prompts
+        chat_opinion = self.generate_chat_response(state, chat_context, prompts)
+
+        # Save chat opinion to state (not from JSON anymore)
+        opinion_update = self.save_opinion_to_state(state, chat_opinion) if chat_opinion else {}
+
+        # Log agent chat to conversation markdown
+        if logger and chat_opinion:
+            logger.log_agent_chat("manager", expected_iteration, chat_opinion)
+
+        # Log context usage after all agent output
+        self.log_context_to_conversation(state)
 
         result = {
             "tasks": state.get("tasks", []) + [next_task],

@@ -343,9 +343,9 @@ class ModelSwitcher:
         new_abliterated = "🔓" if "abliterated" in new_model.lower() else "🔒"
 
         console.print()
-        console.print("═" * 70)
+        console.print("=" * 70)
         console.print(f"[bold yellow]{emoji} ADAPTIVE MODEL SWITCH - {agent_name.upper()}[/bold yellow]")
-        console.print("═" * 70)
+        console.print("=" * 70)
         console.print(f"[yellow]Trigger:[/yellow] {trigger.value}")
         console.print(f"[red]From:[/red] {old_abliterated} {old_model}")
         console.print(f"[green]To:[/green]   {new_abliterated} {new_model}")
@@ -361,7 +361,7 @@ class ModelSwitcher:
         elif trigger == SwitchTrigger.TIMEOUT:
             console.print(f"[dim]Execution timeout[/dim]")
 
-        console.print("═" * 70)
+        console.print("=" * 70)
         console.print()
 
     def report_success(self, agent_name: str):
@@ -390,7 +390,7 @@ class ModelSwitcher:
             return
 
         console.print("\n[bold cyan]📊 MODEL SWITCH SUMMARY[/bold cyan]")
-        console.print("─" * 50)
+        console.print("-" * 50)
 
         # Laske per agentti
         agent_counts: Dict[str, int] = {}
@@ -413,4 +413,4 @@ class ModelSwitcher:
         console.print("\n[yellow]By trigger:[/yellow]")
         for trigger, count in trigger_counts.items():
             console.print(f"  {trigger}: {count}")
-        console.print("─" * 50)
+        console.print("-" * 50)

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(tree:*)",
       "Bash(wc:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(conda run -n langgraph-rl python:*)"
     ]
   }
 }

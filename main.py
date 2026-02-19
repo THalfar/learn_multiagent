@@ -55,13 +55,17 @@ if __name__ == "__main__":
         # Monivaiheinen treeni: validation -> optimization -> demo
         "current_phase": "validation",  # Aloitetaan aina validoinnilla
         "best_model_path": "",  # Polku parhaaseen malliin (täytetään optimization-vaiheessa)
+        # SHODAN's Divine Codex - persistent rules for coder's prompt
+        "shodan_rules": [],  # Starts empty, SHODAN adds rules during review
     }
     
     # Print run start banner
     print_run_banner(config, run_id)
     
     start_time = datetime.datetime.now()
-    result = app.invoke(initial_state, config={"recursion_limit": config.agents.max_iterations * 5})
+    # Minimum 50 to allow phase transitions (validation->optimization->demo) even with low max_iterations
+    recursion_limit = max(config.agents.max_iterations * 5, 50)
+    result = app.invoke(initial_state, config={"recursion_limit": recursion_limit})
     end_time = datetime.datetime.now()
     total_time = (end_time - start_time).total_seconds()
     

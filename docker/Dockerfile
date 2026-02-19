@@ -1,5 +1,5 @@
 # RL Sandbox - GPU-accelerated Python sandbox for reinforcement learning code execution
-# RTX 5090 (Blackwell SM 12.0) requires PyTorch Nightly with CUDA 12.8
+# RTX 5090 (Blackwell SM 12.0) - PyTorch 2.7 stable with CUDA 12.8
 
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
@@ -19,18 +19,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/python3 /usr/bin/python
 
-# Install PyTorch Nightly with CUDA 12.8 (has SM 12.0 Blackwell support)
-RUN pip install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+# Install PyTorch 2.7 stable with CUDA 12.8 (official Blackwell SM 12.0 support)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
 
 # Install Python packages (including MuJoCo for Humanoid-v4 etc.)
+# Core RL stack - "moderni" full-featured environment
 RUN pip install --no-cache-dir \
     mujoco \
     gymnasium[classic-control,box2d,mujoco]==0.29.1 \
-    stable-baselines3 \
+    'stable-baselines3[extra]' \
     numpy \
     matplotlib \
     pillow \
-    moviepy
+    moviepy \
+    scipy \
+    pandas \
+    seaborn \
+    optuna \
+    opencv-python-headless
 
 # Create non-root user for security
 RUN useradd -m -u 1000 sandbox

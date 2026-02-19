@@ -39,7 +39,6 @@ class Video(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool
     output_dir: str
-    record_frequency: int
 
 class HistoryWindow(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -72,10 +71,20 @@ class Llm(BaseModel):
     model_config = ConfigDict(extra='forbid')
     model: str
 
-class OllamaConfig(BaseModel):
+class OllamaOptions(BaseModel):
+    """Ollama runtime options - controls VRAM/context tradeoffs for large models"""
     model_config = ConfigDict(extra='forbid')
+    num_ctx: Optional[int] = Field(default=None, description="Context window size (smaller = more VRAM for model layers)")
+    num_gpu: Optional[int] = Field(default=None, description="Max layers on GPU (999 = all that fit)")
+    num_thread: Optional[int] = Field(default=None, description="CPU threads for offloaded layers (use physical cores)")
+    num_batch: Optional[int] = Field(default=None, description="Batch size (smaller = less memory)")
+
+class OllamaConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid', protected_namespaces=())  # Allow model_options field
     base_url: str
     api_key: str
+    options: OllamaOptions = Field(default_factory=OllamaOptions, description="Global Ollama options for all models")
+    model_options: Dict[str, OllamaOptions] = Field(default_factory=dict, description="Per-model option overrides (merged with global)")
 
 class AgentLLMConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -100,6 +109,28 @@ class TrainingPhases(BaseModel):
     enabled: bool = Field(default=False, description="Enable multi-phase training")
     validation_timeout_multiplier: float = Field(default=0.05, description="Validation phase timeout as fraction of base (5% = 0.05)")
     demo_timeout_seconds: int = Field(default=300, description="Demo phase timeout in seconds")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VERBOSE/LOGGING SETTINGS - Hallitsee konsolitulosteen määrää
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ShodanRulesConfig(BaseModel):
+    """SHODAN's Divine Codex - reviewer can add persistent rules to coder's prompt"""
+    model_config = ConfigDict(extra='forbid')
+    enabled: bool = Field(default=False, description="Enable SHODAN's rule management power")
+    max_rules: int = Field(default=20, description="Maximum number of active rules")
+
+class VerboseConfig(BaseModel):
+    """Verbose settings - control console output noise"""
+    model_config = ConfigDict(extra='forbid')
+    tester_wake_up: bool = Field(default=True, description="Show TESTER: Waking up banners")
+    gpu_validation: bool = Field(default=True, description="Show GPU/CUDA VALIDATION CHECK block")
+    docker_sandbox_info: bool = Field(default=True, description="Show Docker sandbox initializing info")
+    gpu_vram_stats: bool = Field(default=True, description="Show GPU/VRAM STATISTICS block")
+    video_file_check: bool = Field(default=True, description="Show VIDEO FILE CHECK block")
+    doc_analysis_result: bool = Field(default=False, description="Show Documentation Analysis Result")
+    shodan_response_in_results: bool = Field(default=False, description="Include Response to SHODAN in test_results")
+    shodan_rules: bool = Field(default=True, description="Show SHODAN's active rules when coder starts")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu
@@ -143,6 +174,14 @@ class ProjectConfig(BaseModel):
     adaptive_model_switching: AdaptiveModelSwitching = Field(
         default_factory=AdaptiveModelSwitching,
         description="Adaptive model switching - switch model randomly when agent gets stuck"
+    )
+    verbose: VerboseConfig = Field(
+        default_factory=VerboseConfig,
+        description="Verbose/logging settings - control console output noise"
+    )
+    shodan_rules: ShodanRulesConfig = Field(
+        default_factory=ShodanRulesConfig,
+        description="SHODAN's Divine Codex - reviewer adds persistent rules to coder's prompt"
     )
     prompts_file: str = Field(
         default="config/prompts.yaml",
@@ -211,6 +250,14 @@ class Config:
     @property
     def adaptive_model_switching(self) -> AdaptiveModelSwitching:
         return self.project.adaptive_model_switching
+
+    @property
+    def verbose(self) -> VerboseConfig:
+        return self.project.verbose
+
+    @property
+    def shodan_rules(self) -> ShodanRulesConfig:
+        return self.project.shodan_rules
 
     def get_prompt(self, agent_name: str) -> Dict[str, str]:
         """Get prompt dict for agent (e.g. 'manager')."""

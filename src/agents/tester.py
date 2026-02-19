@@ -13,7 +13,7 @@ PROJECT_ROOT = os.path.abspath(".")
 
 # Docker sandbox configuration
 DOCKER_SANDBOX_ENABLED = True  # Set to False to run locally (for development)
-DOCKER_IMAGE = "rl-sandbox:latest"
+DOCKER_IMAGE = "citadel-rl:latest"
 
 # GPU validation flag - set to True after first successful validation
 _GPU_VALIDATED = False
@@ -246,13 +246,14 @@ except ImportError as e: print(f"stable_baselines3.common.callbacks: FAILED ({e}
         return f"Diagnostic error: {e}"
 
 
-def validate_gpu_in_container(timeout: int = 60) -> tuple[bool, str]:
+def validate_gpu_in_container(timeout: int = 60, verbose: bool = True) -> tuple[bool, str]:
     """
     Validate GPU/CUDA functionality in Docker container before running any RL code.
     Runs a minimal PyTorch CUDA test + tiny RL training to ensure everything works.
 
     Args:
         timeout: Execution timeout in seconds
+        verbose: Whether to print status messages
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -262,10 +263,11 @@ def validate_gpu_in_container(timeout: int = 60) -> tuple[bool, str]:
     if _GPU_VALIDATED:
         return True, "GPU already validated"
 
-    print("\n" + "─" * 70)
-    print("[bold cyan]🔍 GPU/CUDA VALIDATION CHECK[/bold cyan]")
-    print("─" * 70)
-    print("[cyan]Running GPU validation before first RL execution...[/cyan]")
+    if verbose:
+        print("\n" + "-" * 70)
+        print("[bold cyan]🔍 GPU/CUDA VALIDATION CHECK[/bold cyan]")
+        print("-" * 70)
+        print("[cyan]Running GPU validation before first RL execution...[/cyan]")
 
     # Comprehensive GPU + minimal RL validation script
     validation_script = '''
@@ -367,7 +369,8 @@ except Exception as e:
     ]
 
     try:
-        print("[dim]   Running GPU validation in Docker container...[/dim]")
+        if verbose:
+            print("[dim]   Running GPU validation in Docker container...[/dim]")
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -381,33 +384,36 @@ except Exception as e:
 
         if result.returncode == 0:
             _GPU_VALIDATED = True
-            print("[bold green]✅ GPU VALIDATION PASSED[/bold green]")
-            print("[green]   CUDA working, PyTorch OK, minimal RL training successful[/green]")
-            print("─" * 70 + "\n")
+            if verbose:
+                print("[bold green]✅ GPU VALIDATION PASSED[/bold green]")
+                print("[green]   CUDA working, PyTorch OK, minimal RL training successful[/green]")
+                print("-" * 70 + "\n")
             return True, output
         else:
+            # Always print failures (important info)
             print("[bold red]❌ GPU VALIDATION FAILED[/bold red]")
             print(f"[red]   Return code: {result.returncode}[/red]")
             # Show error details
             error_lines = output.strip().split('\n')
             for line in error_lines[-10:]:  # Last 10 lines
                 print(f"[dim red]   {line}[/dim red]")
-            print("─" * 70 + "\n")
+            print("-" * 70 + "\n")
             return False, output
 
     except subprocess.TimeoutExpired:
         msg = f"GPU validation timed out after {timeout}s"
         print(f"[bold red]❌ {msg}[/bold red]")
-        print("─" * 70 + "\n")
+        print("-" * 70 + "\n")
         return False, msg
     except Exception as e:
         msg = f"GPU validation error: {e}"
         print(f"[bold red]❌ {msg}[/bold red]")
-        print("─" * 70 + "\n")
+        print("-" * 70 + "\n")
         return False, msg
 
 
-def run_in_container(code_path: str, output_dir: str, timeout: int, gpu_enabled: bool = True) -> tuple[subprocess.CompletedProcess, dict]:
+def run_in_container(code_path: str, output_dir: str, timeout: int, gpu_enabled: bool = True,
+                      verbose_gpu_validation: bool = True, verbose_docker_info: bool = True) -> tuple[subprocess.CompletedProcess, dict]:
     """
     Execute code in Docker container for isolation with GPU support.
 
@@ -416,6 +422,8 @@ def run_in_container(code_path: str, output_dir: str, timeout: int, gpu_enabled:
         output_dir: Absolute path to output directory on host (for videos, logs)
         timeout: Execution timeout in seconds
         gpu_enabled: Whether to enable GPU access in container
+        verbose_gpu_validation: Whether to print GPU validation messages
+        verbose_docker_info: Whether to print Docker sandbox info messages
 
     Returns:
         Tuple of (subprocess.CompletedProcess, vram_stats dict)
@@ -424,7 +432,7 @@ def run_in_container(code_path: str, output_dir: str, timeout: int, gpu_enabled:
 
     # Run GPU validation on first container execution (if GPU enabled)
     if gpu_enabled and not _GPU_VALIDATED:
-        success, validation_msg = validate_gpu_in_container()
+        success, validation_msg = validate_gpu_in_container(verbose=verbose_gpu_validation)
         if not success:
             print("[bold yellow]⚠️  GPU validation failed - continuing anyway but GPU may not work[/bold yellow]")
             print(f"[dim yellow]   {validation_msg[:200]}[/dim yellow]")
@@ -459,19 +467,20 @@ def run_in_container(code_path: str, output_dir: str, timeout: int, gpu_enabled:
         "python", "/workspace/agent_script.py"
     ])
 
-    # Fun Docker status messages
-    print(f"[dim cyan]🐳 Docker sandbox initializing...[/dim cyan]")
-    print(f"[dim]   Image: {DOCKER_IMAGE}[/dim]")
-    print(f"[dim]   Memory limit: 8GB | CPUs: 15 threads[/dim]")
-    if gpu_enabled:
-        print(f"[bold green]   🎮 GPU: ENABLED (--gpus all)[/bold green]")
-        if vram_before["available"]:
-            print(f"[dim]   VRAM before: {vram_before['used_gb']:.2f}/{vram_before['total_gb']:.2f} GB used[/dim]")
-    else:
-        print(f"[dim yellow]   GPU: disabled (CPU-only mode)[/dim yellow]")
-    print(f"[dim]   Network: disabled (sandboxed)[/dim]")
-    print(f"[dim]   Timeout: {timeout}s ({timeout//60}m {timeout%60}s)[/dim]")
-    print(f"[dim cyan]🚀 Launching container...[/dim cyan]")
+    # Fun Docker status messages (controlled by verbose_docker_info)
+    if verbose_docker_info:
+        print(f"[dim cyan]🐳 Docker sandbox initializing...[/dim cyan]")
+        print(f"[dim]   Image: {DOCKER_IMAGE}[/dim]")
+        print(f"[dim]   Memory limit: 8GB | CPUs: 15 threads[/dim]")
+        if gpu_enabled:
+            print(f"[bold green]   🎮 GPU: ENABLED (--gpus all)[/bold green]")
+            if vram_before["available"]:
+                print(f"[dim]   VRAM before: {vram_before['used_gb']:.2f}/{vram_before['total_gb']:.2f} GB used[/dim]")
+        else:
+            print(f"[dim yellow]   GPU: disabled (CPU-only mode)[/dim yellow]")
+        print(f"[dim]   Network: disabled (sandboxed)[/dim]")
+        print(f"[dim]   Timeout: {timeout}s ({timeout//60}m {timeout%60}s)[/dim]")
+        print(f"[dim cyan]🚀 Launching container...[/dim cyan]")
 
     result = subprocess.run(
         cmd,
@@ -766,25 +775,30 @@ class Tester(BaseAgent):
         os.makedirs(video_dir, exist_ok=True)
         code_path = f"{code_dir}/agent_code_iter_{state.get('iteration', 0)}.py"
 
-        print("\n\n" + "─" * 70)
-        print("[bold yellow]🧪 TESTER: Waking up...[/bold yellow]")
-        print("─" * 70)
-        print("[yellow]💭 \"Another day, another test run. Let's see what the Coder cooked up this time...\"[/yellow]")
-        print()
-        print("[yellow]📝 Preparing sandbox environment...[/yellow]")
-        print(f"[dim]   Code file: {code_path}[/dim]")
-        print(f"[dim]   Video output: {video_dir}[/dim]")
-        print(f"[dim]   Timeout: {execution_timeout}s ({execution_timeout//60}m {execution_timeout%60}s)[/dim]")
-        print("[yellow]🔒 I can't see the code - I judge by results only[/yellow]")
+        # Get verbose settings
+        verbose_wake_up = self.config.verbose.tester_wake_up
+
+        if verbose_wake_up:
+            print("\n\n" + "-" * 70)
+            print("[bold yellow]🧪 TESTER: Waking up...[/bold yellow]")
+            print("-" * 70)
+            print("[yellow]💭 \"Another day, another test run. Let's see what the Coder cooked up this time...\"[/yellow]")
+            print()
+            print("[yellow]📝 Preparing sandbox environment...[/yellow]")
+            print(f"[dim]   Code file: {code_path}[/dim]")
+            print(f"[dim]   Video output: {video_dir}[/dim]")
+            print(f"[dim]   Timeout: {execution_timeout}s ({execution_timeout//60}m {execution_timeout%60}s)[/dim]")
+            print("[yellow]🔒 I can't see the code - I judge by results only[/yellow]")
 
         # Check if reviewer has a special request
         reviewer_instruction = state.get("reviewer_tester_instruction", None)
         doc_inspection_results = ""
         if reviewer_instruction:
-            print()
-            print("[bold cyan]📋 SHODAN's Command:[/bold cyan]")
-            print(f"[cyan]   \"{reviewer_instruction}\"[/cyan]")
-            print("[yellow]💭 \"The machine god has spoken. I shall investigate...\"[/yellow]")
+            if verbose_wake_up:
+                print()
+                print("[bold cyan]📋 SHODAN's Command:[/bold cyan]")
+                print(f"[cyan]   \"{reviewer_instruction}\"[/cyan]")
+                print("[yellow]💭 \"The machine god has spoken. I shall investigate...\"[/yellow]")
 
             # Check if SHODAN wants documentation inspection
             # Look for patterns like "check help", "inspect", "documentation", "signature", class names
@@ -824,25 +838,31 @@ class Tester(BaseAgent):
             needs_doc_check = any(re.search(p, reviewer_instruction, re.IGNORECASE) for p in doc_patterns)
 
             if classes_to_inspect or needs_doc_check:
-                print()
-                print("[bold green]📚 DOCUMENTATION INSPECTION TRIGGERED[/bold green]")
+                if verbose_wake_up:
+                    print()
+                    print("[bold green]📚 DOCUMENTATION INSPECTION TRIGGERED[/bold green]")
 
                 if not classes_to_inspect:
                     # Default classes to check if generic request
                     classes_to_inspect = ['gymnasium.wrappers.RecordVideo']
 
                 for class_path in classes_to_inspect[:3]:  # Max 3 classes
-                    print(f"[green]   Inspecting: {class_path}[/green]")
+                    if verbose_wake_up:
+                        print(f"[green]   Inspecting: {class_path}[/green]")
                     inspection_result = run_doc_inspection_in_container(class_path)
                     doc_inspection_results += f"\n\n{inspection_result}"
                     # Escape Rich markup in the output (e.g., [int] in Callable[[int], bool])
-                    escaped_result = rich_escape(inspection_result)
-                    print(f"[dim]{escaped_result[:500]}...[/dim]" if len(escaped_result) > 500 else f"[dim]{escaped_result}[/dim]")
+                    if verbose_wake_up:
+                        escaped_result = rich_escape(inspection_result)
+                        print(f"[dim]{escaped_result[:500]}...[/dim]" if len(escaped_result) > 500 else f"[dim]{escaped_result}[/dim]")
 
-                print("[green]📚 Documentation inspection complete[/green]")
+                if verbose_wake_up:
+                    print("[green]📚 Documentation inspection complete[/green]")
         else:
-            print("[yellow]No special instructions from SHODAN this time.[/yellow]")
-        print("─" * 70 + "\n")
+            if verbose_wake_up:
+                print("[yellow]No special instructions from SHODAN this time.[/yellow]")
+        if verbose_wake_up:
+            print("-" * 70 + "\n")
 
         # Auto-fix common LLM mistakes before execution
         code = auto_fix_common_issues(code)
@@ -861,8 +881,16 @@ class Tester(BaseAgent):
                 max_vram_gb = self.config.gpu.max_vram_gb
                 warn_vram_gb = self.config.gpu.warn_vram_gb
 
+                # Get verbose settings from config
+                verbose_gpu_validation = self.config.verbose.gpu_validation
+                verbose_docker_info = self.config.verbose.docker_sandbox_info
+
                 # Run in Docker container for isolation (with GPU if enabled)
-                result, vram_stats = run_in_container(code_path, video_dir, execution_timeout, gpu_enabled)
+                result, vram_stats = run_in_container(
+                    code_path, video_dir, execution_timeout, gpu_enabled,
+                    verbose_gpu_validation=verbose_gpu_validation,
+                    verbose_docker_info=verbose_docker_info
+                )
             else:
                 # Run locally (for development/debugging) - no VRAM tracking
                 cmd = ["python", code_path]
@@ -895,70 +923,74 @@ class Tester(BaseAgent):
                 stderr = stderr + "\n\n=== CONTAINER DIAGNOSTICS ===\n" + diag_output
 
             # Print VRAM statistics (GPU usage by RL model)
+            verbose_gpu_vram = self.config.verbose.gpu_vram_stats
             if vram_stats["gpu_enabled"] and vram_stats["before"]["available"]:
-                print("\n" + "─" * 70)
-                print("[bold cyan]🎮 GPU/VRAM STATISTICS[/bold cyan]")
-                print("─" * 70)
-                print(f"[dim]   VRAM before RL: {vram_stats['before']['used_gb']:.2f} GB[/dim]")
-                print(f"[dim]   VRAM after RL:  {vram_stats['after']['used_gb']:.2f} GB[/dim]")
                 rl_vram = vram_stats["rl_used_gb"]
-                if rl_vram > 0:
-                    if rl_vram > max_vram_gb:
-                        print(f"[bold red]   ⚠️  RL model VRAM: {rl_vram:.2f} GB (EXCEEDS LIMIT: {max_vram_gb} GB!)[/bold red]")
-                    elif rl_vram > warn_vram_gb:
-                        print(f"[yellow]   ⚠️  RL model VRAM: {rl_vram:.2f} GB (warning: >{warn_vram_gb} GB)[/yellow]")
+                if verbose_gpu_vram:
+                    print("\n" + "-" * 70)
+                    print("[bold cyan]🎮 GPU/VRAM STATISTICS[/bold cyan]")
+                    print("-" * 70)
+                    print(f"[dim]   VRAM before RL: {vram_stats['before']['used_gb']:.2f} GB[/dim]")
+                    print(f"[dim]   VRAM after RL:  {vram_stats['after']['used_gb']:.2f} GB[/dim]")
+                    if rl_vram > 0:
+                        if rl_vram > max_vram_gb:
+                            print(f"[bold red]   ⚠️  RL model VRAM: {rl_vram:.2f} GB (EXCEEDS LIMIT: {max_vram_gb} GB!)[/bold red]")
+                        elif rl_vram > warn_vram_gb:
+                            print(f"[yellow]   ⚠️  RL model VRAM: {rl_vram:.2f} GB (warning: >{warn_vram_gb} GB)[/yellow]")
+                        else:
+                            print(f"[green]   ✓ RL model VRAM: {rl_vram:.2f} GB (limit: {max_vram_gb} GB)[/green]")
                     else:
-                        print(f"[green]   ✓ RL model VRAM: {rl_vram:.2f} GB (limit: {max_vram_gb} GB)[/green]")
-                else:
-                    print(f"[dim]   RL model VRAM: ~0 GB (minimal/released)[/dim]")
-                print(f"[dim]   Total GPU VRAM: {vram_stats['before']['total_gb']:.1f} GB[/dim]")
-                print("─" * 70)
+                        print(f"[dim]   RL model VRAM: ~0 GB (minimal/released)[/dim]")
+                    print(f"[dim]   Total GPU VRAM: {vram_stats['before']['total_gb']:.1f} GB[/dim]")
+                    print("-" * 70)
 
-                # Add VRAM info to stderr for LLM analysis
+                # Add VRAM info to stderr for LLM analysis (always, for LLM context)
                 vram_info = f"\n=== GPU VRAM USAGE ===\nRL model used: {rl_vram:.2f} GB\nLimit: {max_vram_gb} GB\nStatus: {'OK' if rl_vram <= max_vram_gb else 'EXCEEDED'}\n"
                 stderr = (stderr or "") + vram_info
 
             # Check for video files after execution
             video_check = check_video_files(video_dir)
-            
-            # Add video check information to output
-            video_check_output = []
-            video_check_output.append("\n" + "─" * 70)
-            video_check_output.append("[bold cyan]🎬 VIDEO FILE CHECK[/bold cyan]")
-            video_check_output.append("─" * 70)
-            video_check_output.append(f"[dim]Scanning: {video_dir}[/dim]")
-            
-            if video_check["error"]:
-                video_check_output.append(f"[red]❌ Error: {video_check['error']}[/red]")
-            elif not video_check["exists"]:
-                video_check_output.append(f"[red]📁 Video directory does not exist: {video_dir}[/red]")
-                video_check_output.append(f"[dim]   (Coder needs to add RecordVideo wrapper)[/dim]")
-            elif not video_check["video_files"]:
-                video_check_output.append(f"[yellow]🔍 No video files found in {video_dir}[/yellow]")
-                video_check_output.append(f"[dim]   (Training ran but no video recorded)[/dim]")
-            else:
-                video_check_output.append(f"[green]🎥 Found {len(video_check['video_files'])} video file(s)![/green]")
-                video_check_output.append(f"[dim]   Total size: {video_check['total_size'] / (1024*1024):.2f} MB[/dim]")
-                video_check_output.append(f"[green]   ✓ Valid videos: {video_check['valid_videos']}[/green]")
-                if video_check["empty_videos"] > 0:
-                    video_check_output.append(f"[red]   ✗ Empty/corrupted: {video_check['empty_videos']}[/red]")
-                if video_check['valid_videos'] > 0:
-                    video_check_output.append(f"[dim cyan]   🎬 Agent behavior captured on film![/dim cyan]")
-                
-                # Show details of first few videos
-                for i, vf in enumerate(video_check["video_files"][:5]):
-                    status = "✓" if vf["is_valid"] and not vf["is_empty"] else "✗"
-                    color = "green" if vf["is_valid"] and not vf["is_empty"] else "red"
-                    video_check_output.append(f"[{color}]{status} {vf['name']}: {vf['size_mb']:.2f} MB[/{color}]")
-                
-                if len(video_check["video_files"]) > 5:
-                    video_check_output.append(f"[dim]... and {len(video_check['video_files']) - 5} more[/dim]")
-            
-            video_check_output.append("─" * 70 + "\n")
-            
-            # Print video check results
-            for line in video_check_output:
-                print(line)
+            verbose_video_check = self.config.verbose.video_file_check
+
+            # Add video check information to output (only if verbose)
+            if verbose_video_check:
+                video_check_output = []
+                video_check_output.append("\n" + "-" * 70)
+                video_check_output.append("[bold cyan]🎬 VIDEO FILE CHECK[/bold cyan]")
+                video_check_output.append("-" * 70)
+                video_check_output.append(f"[dim]Scanning: {video_dir}[/dim]")
+
+                if video_check["error"]:
+                    video_check_output.append(f"[red]❌ Error: {video_check['error']}[/red]")
+                elif not video_check["exists"]:
+                    video_check_output.append(f"[red]📁 Video directory does not exist: {video_dir}[/red]")
+                    video_check_output.append(f"[dim]   (Coder needs to add RecordVideo wrapper)[/dim]")
+                elif not video_check["video_files"]:
+                    video_check_output.append(f"[yellow]🔍 No video files found in {video_dir}[/yellow]")
+                    video_check_output.append(f"[dim]   (Training ran but no video recorded)[/dim]")
+                else:
+                    video_check_output.append(f"[green]🎥 Found {len(video_check['video_files'])} video file(s)![/green]")
+                    video_check_output.append(f"[dim]   Total size: {video_check['total_size'] / (1024*1024):.2f} MB[/dim]")
+                    video_check_output.append(f"[green]   ✓ Valid videos: {video_check['valid_videos']}[/green]")
+                    if video_check["empty_videos"] > 0:
+                        video_check_output.append(f"[red]   ✗ Empty/corrupted: {video_check['empty_videos']}[/red]")
+                    if video_check['valid_videos'] > 0:
+                        video_check_output.append(f"[dim cyan]   🎬 Agent behavior captured on film![/dim cyan]")
+
+                    # Show details of first few videos
+                    for i, vf in enumerate(video_check["video_files"][:5]):
+                        status = "✓" if vf["is_valid"] and not vf["is_empty"] else "✗"
+                        color = "green" if vf["is_valid"] and not vf["is_empty"] else "red"
+                        video_check_output.append(f"[{color}]{status} {vf['name']}: {vf['size_mb']:.2f} MB[/{color}]")
+
+                    if len(video_check["video_files"]) > 5:
+                        video_check_output.append(f"[dim]... and {len(video_check['video_files']) - 5} more[/dim]")
+
+                video_check_output.append("-" * 70 + "\n")
+
+                # Print video check results
+                for line in video_check_output:
+                    print(line)
             
             # Add video check info to stderr for LLM analysis
             video_info_text = "\n".join([
@@ -1002,19 +1034,21 @@ class Tester(BaseAgent):
 
             # Show execution statistics
             if execution_failed:
-                print("\n" + "─" * 70)
+                print("\n" + "-" * 70)
                 print("[bold red]❌ EXECUTION FAILED[/bold red]")
-                print("─" * 70)
+                print("-" * 70)
                 print(f"[red]Return code: {result.returncode}[/red]")
                 print(f"[dim]Container terminated with error[/dim]")
-                # Show brief error preview
-                error_preview = (result.stderr[:300] or result.stdout[:300]).strip()
+                # Show LAST part of error (where the actual error message is)
+                error_text = result.stderr or result.stdout
+                error_preview = error_text[-500:].strip() if error_text else ""
                 if error_preview:
-                    print(f"[dim]Error preview: {error_preview}...[/dim]")
+                    print(f"[red]Error (last 500 chars):[/red]")
+                    print(f"[dim]{error_preview}[/dim]")
             else:
-                print("\n" + "─" * 70)
+                print("\n" + "-" * 70)
                 print("[bold green]✅ EXECUTION COMPLETE[/bold green]")
-                print("─" * 70)
+                print("-" * 70)
                 print(f"[dim]Container exited successfully (code 0)[/dim]")
             
             minutes = int(execution_duration // 60)
@@ -1045,12 +1079,12 @@ class Tester(BaseAgent):
             if algo_match:
                 print(f"[dim]Algorithm: {algo_match.group(1)}[/dim]")
             
-            print("─" * 70 + "\n")
+            print("-" * 70 + "\n")
 
             # LLM tester analysis - let LLM analyze all outputs (including errors)
-            print("\n\n" + "─" * 70)
+            print("\n\n" + "-" * 70)
             print("[bold yellow]🧪 TESTER: Analyzing results...[/bold yellow]")
-            print("─" * 70)
+            print("-" * 70)
             print("[yellow]💭 \"Time to make sense of all this output...\"[/yellow]")
             print()
             print("[yellow]🤖 Engaging analysis mode...[/yellow]")
@@ -1062,8 +1096,9 @@ class Tester(BaseAgent):
                 stdout_preview = stdout[:200].replace('\n', ' ').strip()
                 print(f"[dim]   stdout preview: \"{stdout_preview}...\"[/dim]")
             if result.stderr:
-                stderr_preview = result.stderr[:150].replace('\n', ' ').strip()
-                print(f"[dim]   stderr preview: \"{stderr_preview}...\"[/dim]")
+                # Show END of stderr (where errors usually are)
+                stderr_preview = result.stderr[-300:].replace('\n', ' ').strip()
+                print(f"[dim]   stderr (last 300): \"{stderr_preview}\"[/dim]")
             print()
             
             # Get success threshold from current environment (execution_timeout already retrieved earlier)
@@ -1089,9 +1124,9 @@ class Tester(BaseAgent):
             # 2. Normal test analysis (execution results)
             doc_analysis_result = None
             if doc_inspection_results and reviewer_instruction:
-                print("\n" + "─" * 70)
+                print("\n" + "-" * 70)
                 print("[bold cyan]📚 DOCUMENTATION ANALYSIS (separate LLM call)[/bold cyan]")
-                print("─" * 70)
+                print("-" * 70)
                 print("[cyan]Running focused documentation analysis first...[/cyan]")
 
                 # Get doc analysis template
@@ -1123,7 +1158,17 @@ class Tester(BaseAgent):
                         doc_analysis_result = {"doc_answer": doc_response.content, "raw": True}
                         print(f"[dim]{doc_response.content[:500]}[/dim]")
 
-                    print("─" * 70)
+                    # Log to conversation markdown
+                    _conv_logger = state.get("conversation_logger")
+                    if _conv_logger and hasattr(_conv_logger, 'log_doc_analysis'):
+                        _conv_logger.log_doc_analysis(
+                            reviewer_instruction=reviewer_instruction,
+                            doc_answer=doc_analysis_result.get("doc_answer", ""),
+                            correct_params=doc_analysis_result.get("correct_params"),
+                            common_mistakes=doc_analysis_result.get("common_mistakes"),
+                        )
+
+                    print("-" * 70)
                     print("[cyan]Now running normal test analysis...[/cyan]\n")
 
             # Format template for normal test analysis
@@ -1169,14 +1214,14 @@ class Tester(BaseAgent):
                 tester_opinion = parsed.get("tester_opinion", "")
                 success = parsed.get("success", None)
                 metrics = parsed.get("metrics", {})
-                my_opinion = parsed.get("my_opinion", "")  # Tester's personal take
+                # NOTE: my_opinion removed from JSON - now comes from separate chat call
                 reviewer_response = parsed.get("reviewer_response", "")  # Response to SHODAN's request
                 thoughts = parsed.get("thoughts", "")  # Tester's internal thoughts
 
                 # Analysis output - this is the tester's report to reviewer
-                print("\n" + "─" * 70)
+                print("\n" + "-" * 70)
                 print("[bold yellow]🧪 TESTER'S ANALYSIS COMPLETE[/bold yellow]")
-                print("─" * 70)
+                print("-" * 70)
 
                 # Show tester's thoughts/reasoning (if provided)
                 if thoughts:
@@ -1224,10 +1269,12 @@ class Tester(BaseAgent):
 
                 # Response to reviewer's special request (if any)
                 # Combine doc analysis result with reviewer_response if both exist
+                verbose_doc_analysis = self.config.verbose.doc_analysis_result
                 if doc_analysis_result and doc_analysis_result.get("doc_answer"):
-                    print()
-                    print("[bold cyan]📚 Documentation Analysis Result (from separate LLM call):[/bold cyan]")
-                    print(f"[cyan]   {doc_analysis_result['doc_answer']}[/cyan]")
+                    if verbose_doc_analysis:
+                        print()
+                        print("[bold cyan]📚 Documentation Analysis Result (from separate LLM call):[/bold cyan]")
+                        print(f"[cyan]   {doc_analysis_result['doc_answer']}[/cyan]")
                     # Combine with any additional reviewer_response
                     if reviewer_response:
                         reviewer_response = f"DOCUMENTATION: {doc_analysis_result['doc_answer']}\n\nADDITIONAL: {reviewer_response}"
@@ -1235,27 +1282,26 @@ class Tester(BaseAgent):
                         reviewer_response = f"DOCUMENTATION: {doc_analysis_result['doc_answer']}"
 
                 if reviewer_response:
-                    print()
-                    print("[bold cyan]📬 Response to SHODAN's Request:[/bold cyan]")
-                    print(f"[cyan]   {reviewer_response[:500]}{'...' if len(reviewer_response) > 500 else ''}[/cyan]")
+                    if verbose_doc_analysis:
+                        print()
+                        print("[bold cyan]📬 Response to SHODAN's Request:[/bold cyan]")
+                        print(f"[cyan]   {reviewer_response[:500]}{'...' if len(reviewer_response) > 500 else ''}[/cyan]")
                 elif reviewer_instruction:
-                    print()
-                    print("[dim cyan]📬 SHODAN asked: \"{reviewer_instruction}\"[/dim cyan]")
-                    print("[dim]   (No specific response provided)[/dim]")
+                    if verbose_doc_analysis:
+                        print()
+                        print("[dim cyan]📬 SHODAN asked: \"{reviewer_instruction}\"[/dim cyan]")
+                        print("[dim]   (No specific response provided)[/dim]")
 
-                # Team chatter (my_opinion)
-                if my_opinion:
-                    print()
-                    print("[yellow]💬 Tester's take (team chatter):[/yellow]")
-                    print(f"[yellow italic]   \"{my_opinion}\"[/yellow italic]")
+                # NOTE: Team chatter (my_opinion) now comes from separate chat call after work
 
-                print("─" * 70 + "\n")
-                
+                print("-" * 70 + "\n")
+
                 # Combine summary, opinion and reviewer response for the report
                 test_results_parts = [summary]
                 if tester_opinion:
                     test_results_parts.append(f"Tester's assessment: {tester_opinion}")
-                if reviewer_response:
+                # Only include SHODAN response in results if verbose setting allows (avoids duplication)
+                if reviewer_response and self.config.verbose.shodan_response_in_results:
                     test_results_parts.append(f"Response to SHODAN's request: {reviewer_response}")
                 test_results = "\n\n".join(test_results_parts)
 
@@ -1281,8 +1327,41 @@ class Tester(BaseAgent):
             # Save tester's response to conversation history
             history_update = self.save_message_to_history(state, response.content)
 
-            # Save tester's opinion to state for team chatter
-            opinion_update = self.save_opinion_to_state(state, my_opinion) if my_opinion else {}
+            # === CHAT CALL: Generate opinion AFTER work is done ===
+            # Work first, chat second - separate LLM call for team chatter
+            mean_reward = metrics.get("mean_reward") if metrics else None
+
+            # Build observations from thoughts and any notable issues
+            observations_parts = []
+            if thoughts:
+                observations_parts.append(f"Thoughts: {thoughts}")
+            if execution_failed:
+                observations_parts.append("Execution failed!")
+            if video_check.get("valid_videos", 0) > 0:
+                observations_parts.append(f"Video recorded: {video_check['valid_videos']} valid file(s)")
+            elif video_check.get("exists") and not video_check.get("video_files"):
+                observations_parts.append("No video files generated")
+            observations = " | ".join(observations_parts) if observations_parts else "Nothing unusual"
+
+            chat_context = {
+                "success": success,
+                "mean_reward": mean_reward if mean_reward is not None else "unknown",
+                "success_threshold": success_threshold,
+                "summary": summary[:300] if len(summary) > 300 else summary,
+                "observations": observations,
+            }
+            prompts = self.config.prompts
+            chat_opinion = self.generate_chat_response(state, chat_context, prompts)
+
+            # Save chat opinion to state (not from JSON anymore)
+            opinion_update = self.save_opinion_to_state(state, chat_opinion) if chat_opinion else {}
+
+            # Log agent chat to conversation markdown
+            if logger and chat_opinion:
+                logger.log_agent_chat("tester", state.get("iteration", 0), chat_opinion)
+
+            # Log context usage after all agent output
+            self.log_context_to_conversation(state)
 
             result_dict = {
                 "test_results": test_results,
@@ -1311,9 +1390,9 @@ class Tester(BaseAgent):
                 if new_model:
                     self.switch_model(new_model)
 
-            print("\n\n" + "─" * 70)
+            print("\n\n" + "-" * 70)
             print(f"[bold yellow]🧪 TESTER: Timeout Report[/bold yellow]")
-            print("─" * 70)
+            print("-" * 70)
             print()
             print(f"[bold red]⏰ TIMEOUT: Execution exceeded {timeout_str} ({execution_timeout}s)[/bold red]")
             print()
@@ -1325,7 +1404,7 @@ class Tester(BaseAgent):
             print(f"   [yellow]No reward metrics or video files could be generated.[/yellow]")
             print(f"   [yellow]Recommendation: Reduce training timesteps or simplify the training loop.[/yellow]")
             print()
-            print("─" * 70 + "\n")
+            print("-" * 70 + "\n")
 
             # Log to conversation file
             logger = state.get("conversation_logger")
@@ -1344,12 +1423,12 @@ class Tester(BaseAgent):
                 "execution_stderr": f"Execution timeout after {execution_timeout} seconds"
             }
         except Exception as e:
-            print("\n" + "─" * 70)
+            print("\n" + "-" * 70)
             print(f"[bold red]💥 UNEXPECTED ERROR[/bold red]")
-            print("─" * 70)
+            print("-" * 70)
             print(f"[red]{type(e).__name__}: {e}[/red]")
             print(f"[dim]   Something went wrong outside the sandbox[/dim]")
-            print("─" * 70 + "\n")
+            print("-" * 70 + "\n")
             
             # Log to conversation file
             logger = state.get("conversation_logger")

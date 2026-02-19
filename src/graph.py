@@ -43,6 +43,8 @@ def create_graph(config: Config):
         # Monivaiheinen treeni - vaihe per ympäristö
         current_phase: str  # "validation" | "optimization" | "demo"
         best_model_path: str  # Polku parhaaseen malliin (optimization-vaiheesta)
+        # SHODAN's Divine Codex - persistent rules for coder's prompt
+        shodan_rules: List[Dict[str, Any]]  # [{"rule": "...", "iteration": N}, ...]
     
     def should_continue(state: AgentState) -> str:
         # Check if manager said DONE

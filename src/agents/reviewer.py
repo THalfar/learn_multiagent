@@ -11,9 +11,9 @@ class Reviewer(BaseAgent):
         print_agent_transition("tester", "reviewer")
         
         # Show what reviewer sees (the smartest agent sees everything)
-        print("\n\n" + "─" * 70)
+        print("\n\n" + "-" * 70)
         print("[bold magenta]REVIEWER: Analyzing full picture[/bold magenta]")
-        print("─" * 70)
+        print("-" * 70)
         print("[magenta]Reviewer sees: Code + Tester's analysis + Manager's guidance[/magenta]")
 
         manager_guidance = state.get("manager_guidance", "")
@@ -30,7 +30,7 @@ class Reviewer(BaseAgent):
             print(f"\n[cyan]📬 Tester's response to your request:[/cyan] {tester_response}")
 
         print("\n[bold magenta]Reviewing code, tester analysis, and manager intent...[/bold magenta]")
-        print("─" * 70 + "\n")
+        print("-" * 70 + "\n")
         
         # Get success threshold from current environment
         env_progression = self.config.environment_progression
@@ -55,9 +55,9 @@ class Reviewer(BaseAgent):
         current_phase = state.get("current_phase", "validation")
         if current_phase == "validation":
             phase_criteria = f"""
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 🔬 PHASE: VALIDATION - Approve if code WORKS (threshold doesn't matter!)
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 APPROVE (approved: true) when:
 ✓ Code runs without fatal errors
 ✓ Environment loads correctly
@@ -74,13 +74,13 @@ DO NOT CARE ABOUT:
 - Reward value (threshold irrelevant in validation)
 - Video recording (not needed yet)
 - Hyperparameter quality
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 """
         elif current_phase == "optimization":
             phase_criteria = f"""
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 🚀 PHASE: OPTIMIZATION - Approve if threshold ({success_threshold}) achieved!
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 APPROVE (approved: true) when:
 ✓ mean_reward >= {success_threshold}
 ✓ Training completed successfully
@@ -93,37 +93,70 @@ REJECT (approved: false) when:
 
 DO NOT CARE ABOUT:
 - Video recording (not needed yet - save time for training)
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
 """
         elif current_phase == "demo":
             phase_criteria = f"""
-═══════════════════════════════════════════════════════════════════════════════
-🎬 PHASE: DEMO - Approve if valid video recorded!
-═══════════════════════════════════════════════════════════════════════════════
+===============================================================================
+🎬 PHASE: DEMO - APPROVE if ANY valid video exists! BE DECISIVE!
+===============================================================================
 APPROVE (approved: true) when:
-✓ Valid video file exists (> 1KB, proper format)
-✓ Video shows trained agent behavior
-✓ No recording errors
+✓ ANY valid video file exists (>1KB, .mp4 format) - CHECK THE VIDEO FILE CHECK IN TEST RESULTS
+✓ No fatal recording errors
 
-REJECT (approved: false) when:
-✗ No video file found
-✗ Video file corrupt/empty
-✗ RecordVideo errors
-═══════════════════════════════════════════════════════════════════════════════
+REJECT (approved: false) ONLY when:
+✗ No video file at all
+✗ Video file is 0 bytes or corrupt
+✗ RecordVideo wrapper crashes
+
+⚠️ STOP THE PERFECTIONIST LOOP:
+- Video quality DOESN'T MATTER - it just needs to exist and be valid
+- Don't reject for "not enough episodes" or "could be better"
+- If VIDEO FILE CHECK shows valid videos (>1KB), APPROVE IMMEDIATELY
+- You have WASTED iterations on video loops before. DO NOT REPEAT THIS.
+
+IF RECORDVIDEO FAILS (wrong API), INSCRIBE THIS IN YOUR CODEX:
+  "DEMO VIDEO: Use gym.make(env, render_mode='rgb_array'), then RecordVideo(env, video_folder=path, episode_trigger=lambda e: True, name_prefix='rl-video'). NO fps, NO record_video_trigger params."
+===============================================================================
 """
         else:
             phase_criteria = ""
 
+        # Format SHODAN's Divine Codex for display in prompt
+        shodan_rules = state.get("shodan_rules", [])
+        if shodan_rules:
+            rules_lines = []
+            for i, rule_entry in enumerate(shodan_rules):
+                rules_lines.append(f"  [{i}] {rule_entry['rule']}  (inscribed at iteration {rule_entry['iteration']})")
+            shodan_rules_display = "\n".join(rules_lines)
+        else:
+            shodan_rules_display = "(The Codex is empty. No rules inscribed yet.)"
+
         prompt_dict = self.config.get_prompt("reviewer")
-        task_template = prompt_dict["task_template"].format(
-            manager_guidance=manager_guidance,
-            code=code,
-            test_results=test_results,
-            success_threshold=success_threshold,
-            video_dir=state.get("video_dir", "output/videos"),
-            agent_opinions_context=agent_opinions_context,
-            tester_response=tester_response,
-        )
+
+        # Try formatting with shodan_rules_display, fall back without if template doesn't have it
+        try:
+            task_template = prompt_dict["task_template"].format(
+                manager_guidance=manager_guidance,
+                code=code,
+                test_results=test_results,
+                success_threshold=success_threshold,
+                video_dir=state.get("video_dir", "output/videos"),
+                agent_opinions_context=agent_opinions_context,
+                tester_response=tester_response,
+                shodan_rules_display=shodan_rules_display,
+            )
+        except KeyError:
+            # Prompt template doesn't have {shodan_rules_display} - use without it
+            task_template = prompt_dict["task_template"].format(
+                manager_guidance=manager_guidance,
+                code=code,
+                test_results=test_results,
+                success_threshold=success_threshold,
+                video_dir=state.get("video_dir", "output/videos"),
+                agent_opinions_context=agent_opinions_context,
+                tester_response=tester_response,
+            )
         system_prompt = prompt_dict["system"].format(
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos")
@@ -319,6 +352,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         suggestions = parsed.get("suggestions", [])
         tester_instruction = parsed.get("tester_instruction", None)
         my_opinion = parsed.get("my_opinion", "")  # SHODAN's musings
+        prompt_rules = parsed.get("prompt_rules", None)  # SHODAN's Divine Codex commands
 
         # Remove any thinking tags from feedback and suggestions (shouldn't be there, but safety check)
         import re
@@ -352,9 +386,9 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 tester_instruction = None
         
         # Print reviewer verdict and communication to manager
-        print("\n\n" + "─" * 70)
+        print("\n\n" + "-" * 70)
         print("[bold magenta]REVIEWER → MANAGER[/bold magenta]")
-        print("─" * 70)
+        print("-" * 70)
 
         if approved:
             print("[bold green]VERDICT: APPROVED[/bold green]")
@@ -385,7 +419,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         if reviewer_time > 0:
             print(f"[dim]⏱️  Reviewer analysis time: {reviewer_time:.1f}s[/dim]")
 
-        print("─" * 70 + "\n")
+        print("-" * 70 + "\n")
 
         # Live per-iteration timing and token stats
         iter_stats = stats_obj.get_iteration_stats(iteration)
@@ -412,6 +446,47 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             if token_lines:
                 print(f"   🔢 Tokens: {' | '.join(token_lines)}")
 
+        # Process SHODAN's Divine Codex - rule additions and removals
+        shodan_rules = list(state.get("shodan_rules", []))  # Copy to avoid mutating state directly
+        rules_changed = False
+        shodan_rules_enabled = getattr(self.config, 'shodan_rules', None) and self.config.shodan_rules.enabled
+
+        _codex_log_queue = []  # Collect changes, log after verdict/speech
+
+        if prompt_rules and isinstance(prompt_rules, dict) and shodan_rules_enabled:
+            max_rules = self.config.shodan_rules.max_rules
+            iteration = state.get("iteration", 0)
+
+            # Process removals first (by index, descending to preserve indices)
+            removals = prompt_rules.get("remove", [])
+            if removals and isinstance(removals, list):
+                # Sort descending so removing higher indices doesn't shift lower ones
+                valid_removals = sorted(
+                    [i for i in removals if isinstance(i, int) and 0 <= i < len(shodan_rules)],
+                    reverse=True
+                )
+                for idx in valid_removals:
+                    removed = shodan_rules.pop(idx)
+                    print(f"[red]📜 CODEX ERASED [{idx}]:[/red] {removed['rule']}")
+                    rules_changed = True
+                    _codex_log_queue.append(("remove", removed['rule'], idx))
+
+            # Process additions
+            additions = prompt_rules.get("add", [])
+            if additions and isinstance(additions, list):
+                for rule_text in additions:
+                    if isinstance(rule_text, str) and rule_text.strip():
+                        if len(shodan_rules) >= max_rules:
+                            print(f"[yellow]📜 CODEX FULL ({max_rules} rules) - cannot inscribe: {rule_text[:60]}[/yellow]")
+                        else:
+                            shodan_rules.append({"rule": rule_text.strip(), "iteration": iteration})
+                            print(f"[magenta]📜 CODEX INSCRIBED:[/magenta] {rule_text.strip()}")
+                            rules_changed = True
+                            _codex_log_queue.append(("add", rule_text.strip(), None))
+
+        if rules_changed:
+            print(f"[dim]📜 Divine Codex now has {len(shodan_rules)} rule(s)[/dim]")
+
         # Store suggestions separately for Manager to relay to Coder
         suggestions_text = "\n".join(suggestions) if suggestions else "No specific suggestions"
         
@@ -424,6 +499,15 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                 feedback=feedback,
                 suggestions=suggestions_text
             )
+            # Log SHODAN's divine musings
+            if my_opinion:
+                logger.log_agent_chat("reviewer", iteration, my_opinion)
+            # Log codex changes AFTER verdict and speech
+            for action, text, idx in _codex_log_queue:
+                logger.log_codex_change(action, text, idx)
+
+        # Log context usage after all agent output
+        self.log_context_to_conversation(state)
 
         # Save reviewer's response to conversation history
         history_update = self.save_message_to_history(state, response.content)
@@ -435,7 +519,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "review_feedback": feedback,
             "review_suggestions": suggestions_text,
             "approved": approved,
-            "reviewer_tester_instruction": tester_instruction  # For tester in next iteration
+            "reviewer_tester_instruction": tester_instruction,  # For tester in next iteration
+            "shodan_rules": shodan_rules,  # Updated Divine Codex
         }
         result.update(history_update)
         result.update(opinion_update)

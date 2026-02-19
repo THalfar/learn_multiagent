@@ -21,6 +21,7 @@ MODEL_CONTEXT_SIZES = {
     "qwen3": 32768,
     "qwen3-coder": 32768,
     "qwen3-coder:30b": 32768,
+    "qwen3-coder-next": 65536,  # Large model, but num_ctx may override this
     "qwen2.5": 32768,
     "qwq": 32768,
     "qwq:32b": 32768,
@@ -40,8 +41,21 @@ MODEL_CONTEXT_SIZES = {
     "default": 8192,
 }
 
-def get_model_context_size(model_name: str) -> int:
-    """Get context window size for a model. Returns size in tokens."""
+def get_model_context_size(model_name: str, config=None) -> int:
+    """Get context window size for a model. Returns size in tokens.
+    If config is provided, checks ollama model_options and global options for num_ctx override."""
+    # Check config for num_ctx override (per-model first, then global)
+    if config and hasattr(config, 'ollama') and model_name != "api":
+        ollama = config.ollama
+        # Per-model override
+        if hasattr(ollama, 'model_options') and ollama.model_options:
+            model_opts = ollama.model_options.get(model_name)
+            if model_opts and model_opts.num_ctx:
+                return model_opts.num_ctx
+        # Global override
+        if hasattr(ollama, 'options') and ollama.options and ollama.options.num_ctx:
+            return ollama.options.num_ctx
+
     model_lower = model_name.lower()
 
     # Exact match first
@@ -54,6 +68,34 @@ def get_model_context_size(model_name: str) -> int:
             return size
 
     return MODEL_CONTEXT_SIZES["default"]
+
+
+def get_ollama_options(config, model_name: str) -> dict:
+    """Build merged Ollama options dict for a model.
+    Global options + per-model overrides (model wins). Omits None values."""
+    options = {}
+    if not hasattr(config, 'ollama'):
+        return options
+
+    ollama = config.ollama
+
+    # Start with global options
+    if hasattr(ollama, 'options') and ollama.options:
+        for field in ('num_ctx', 'num_gpu', 'num_thread', 'num_batch'):
+            val = getattr(ollama.options, field, None)
+            if val is not None:
+                options[field] = val
+
+    # Override with per-model options
+    if hasattr(ollama, 'model_options') and ollama.model_options:
+        model_opts = ollama.model_options.get(model_name)
+        if model_opts:
+            for field in ('num_ctx', 'num_gpu', 'num_thread', 'num_batch'):
+                val = getattr(model_opts, field, None)
+                if val is not None:
+                    options[field] = val
+
+    return options
 
 
 def get_loaded_ollama_model(ollama_base_url: str = "http://localhost:11434") -> str | None:
@@ -168,14 +210,20 @@ class BaseAgent:
                 preload_start = time.time()
                 try:
                     base_url = config.ollama.base_url.replace("/v1", "").rstrip("/")
+                    ollama_opts = get_ollama_options(config, model_name)
+                    preload_payload = {"model": model_name, "prompt": "hi", "keep_alive": "5m", "stream": False}
+                    if ollama_opts:
+                        preload_payload["options"] = ollama_opts
                     requests.post(
                         f"{base_url}/api/generate",
-                        json={"model": model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                        json=preload_payload,
                         timeout=120  # 2 minutes for model loading
                     )
                     preload_time = time.time() - preload_start
                     if show_loading:
                         print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
+                    if ollama_opts:
+                        print(f"[dim]  Ollama options: {ollama_opts}[/dim]")
                 except Exception as e:
                     print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
@@ -299,7 +347,7 @@ class BaseAgent:
             # Print thinking with creative formatting - use Console for proper rich formatting
             console = Console()
             print()  # Empty line before thinking
-            print("─" * 70)
+            print("-" * 70)
             
             # Header with agent color and emoji
             if color == "blue":
@@ -313,7 +361,7 @@ class BaseAgent:
             else:
                 console.print(f"[bold]💭 {self.agent_name.upper()} THINKING[/bold]")
             
-            print("─" * 70)
+            print("-" * 70)
             
             # Print all thinking content with appropriate color
             for i, thinking_content in enumerate(all_thinking, 1):
@@ -346,9 +394,9 @@ class BaseAgent:
                         print()  # Space between paragraphs
                 
                 if i < len(all_thinking):
-                    print("─" * 70)
+                    print("-" * 70)
             
-            print("─" * 70)
+            print("-" * 70)
             print()  # Empty line after thinking
 
     def estimate_tokens(self, text: str) -> int:
@@ -389,14 +437,20 @@ class BaseAgent:
             preload_start = time.time()
             try:
                 base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                ollama_opts = get_ollama_options(self.config, new_model)
+                preload_payload = {"model": new_model, "prompt": "hi", "keep_alive": "5m", "stream": False}
+                if ollama_opts:
+                    preload_payload["options"] = ollama_opts
                 requests.post(
                     f"{base_url}/api/generate",
-                    json={"model": new_model, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                    json=preload_payload,
                     timeout=120
                 )
                 load_time = time.time() - preload_start
                 if show_loading:
                     console.print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
+                if ollama_opts:
+                    console.print(f"[dim]  Ollama options: {ollama_opts}[/dim]")
             except Exception as e:
                 console.print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
@@ -445,8 +499,7 @@ class BaseAgent:
             model_base = self.model_name.split(":")[0]
 
             if current_model and current_model == model_base:
-                # Same model - skip swap entirely
-                print(f"[dim]🔄 {self.model_name} (same model, no swap)[/dim]")
+                pass  # Same model - skip swap entirely
             else:
                 # Different model - need to swap
                 swap_start = time.time()
@@ -459,9 +512,13 @@ class BaseAgent:
                 preload_start = time.time()
                 try:
                     base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                    ollama_opts = get_ollama_options(self.config, self.model_name)
+                    preload_payload = {"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False}
+                    if ollama_opts:
+                        preload_payload["options"] = ollama_opts
                     requests.post(
                         f"{base_url}/api/generate",
-                        json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                        json=preload_payload,
                         timeout=120
                     )
                     load_time = time.time() - preload_start
@@ -469,7 +526,8 @@ class BaseAgent:
                         print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
                     # Always show brief timing summary
                     prev = current_model or "none"
-                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s)[/dim]")
+                    opts_info = f" opts={ollama_opts}" if ollama_opts else ""
+                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s){opts_info}[/dim]")
                 except Exception as e:
                     print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
@@ -508,7 +566,7 @@ class BaseAgent:
         tokens_per_sec = total_tokens / timing.duration if timing.duration > 0 else 0
 
         # Get context window size for this model
-        context_size = get_model_context_size(self.model_name)
+        context_size = get_model_context_size(self.model_name, self.config)
         context_pct = (timing.tokens_in / context_size * 100) if context_size > 0 else 0
         context_remaining = context_size - timing.tokens_in
 
@@ -563,7 +621,7 @@ class BaseAgent:
             agent_opinions_context: The formatted agent opinions text (for accurate token counting)
         """
         console = Console()
-        context_size = get_model_context_size(self.model_name)
+        context_size = get_model_context_size(self.model_name, self.config)
 
         components = []
         total_tokens = 0
@@ -657,12 +715,12 @@ class BaseAgent:
         color = agent_colors.get(self.agent_name, "white")
 
         console.print()  # Extra spacing before context breakdown
-        console.print(f"[{color}]┌─ Context Breakdown ({self.agent_name.upper()}) ─────────────────────[/{color}]")
+        console.print(f"[{color}]+- Context Breakdown ({self.agent_name.upper()}) ---------------------[/{color}]")
 
         for comp in components:
             pct = (comp["tokens"] / context_size * 100) if context_size > 0 else 0
             bar_width = int(pct / 2)  # Scale to ~50 chars max
-            bar = "█" * min(bar_width, 25) + "░" * max(0, 5 - bar_width)
+            bar = "#" * min(bar_width, 25) + "." * max(0, 5 - bar_width)
 
             # Color based on percentage
             if pct >= 20:
@@ -672,29 +730,53 @@ class BaseAgent:
             else:
                 comp_color = "dim"
 
-            console.print(f"[{color}]│[/{color}] [{comp_color}]{comp['icon']} {comp['name']:15} {comp['count']:3} {comp['unit']:8} │ {comp['tokens']:>6,} tok ({pct:4.1f}%) {bar}[/{comp_color}]")
+            console.print(f"[{color}]|[/{color}] [{comp_color}]{comp['icon']} {comp['name']:15} {comp['count']:3} {comp['unit']:8} | {comp['tokens']:>6,} tok ({pct:4.1f}%) {bar}[/{comp_color}]")
 
         # Total
         total_pct = (total_tokens / context_size * 100) if context_size > 0 else 0
         remaining = context_size - total_tokens
 
-        console.print(f"[{color}]├─────────────────────────────────────────────────────[/{color}]")
+        console.print(f"[{color}]+-----------------------------------------------------[/{color}]")
 
-        # Total line with appropriate color (but still use agent color for the │ border)
+        # Total line with appropriate color (but still use agent color for the | border)
         if total_pct >= 60:
-            console.print(f"[{color}]│[/{color}] [bold yellow]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%) ⚠️[/bold yellow]")
-            console.print(f"[{color}]│[/{color}] [yellow]🔓 Remaining: {remaining:,} tokens[/yellow]")
+            console.print(f"[{color}]|[/{color}] [bold yellow]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%) ⚠️[/bold yellow]")
+            console.print(f"[{color}]|[/{color}] [yellow]🔓 Remaining: {remaining:,} tokens[/yellow]")
         elif total_pct >= 40:
-            console.print(f"[{color}]│[/{color}] [yellow]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/yellow]")
-            console.print(f"[{color}]│[/{color}] [dim]🔓 Remaining: {remaining:,} tokens[/dim]")
+            console.print(f"[{color}]|[/{color}] [yellow]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/yellow]")
+            console.print(f"[{color}]|[/{color}] [dim]🔓 Remaining: {remaining:,} tokens[/dim]")
         else:
-            console.print(f"[{color}]│[/{color}] [{color}]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/{color}]")
-            console.print(f"[{color}]│[/{color}] [dim]🔓 Remaining: {remaining:,} tokens[/dim]")
+            console.print(f"[{color}]|[/{color}] [{color}]📦 TOTAL CONTEXT   {total_tokens:>6,} / {context_size:,} tokens ({total_pct:.1f}%)[/{color}]")
+            console.print(f"[{color}]|[/{color}] [dim]🔓 Remaining: {remaining:,} tokens[/dim]")
 
-        console.print(f"[{color}]└─────────────────────────────────────────────────────[/{color}]")
+        console.print(f"[{color}]+-----------------------------------------------------[/{color}]")
         console.print()  # Extra spacing after context breakdown
 
+        # Store context data for later logging to conversation.md
+        # (logged after agent's speech, not before)
+        self._last_context_data = {
+            "components": components,
+            "total_tokens": total_tokens,
+            "context_size": context_size
+        }
+
         return total_tokens
+
+    def log_context_to_conversation(self, state: dict):
+        """Log stored context breakdown to conversation.md.
+        Call this AFTER the agent's output has been logged."""
+        if not hasattr(self, '_last_context_data') or not self._last_context_data:
+            return
+        logger = state.get("conversation_logger")
+        if logger and hasattr(logger, 'log_context_usage'):
+            data = self._last_context_data
+            logger.log_context_usage(
+                self.agent_name,
+                data["components"],
+                data["total_tokens"],
+                data["context_size"]
+            )
+        self._last_context_data = None
 
     def format_conversation_history(self, state: dict) -> str:
         """
@@ -745,7 +827,7 @@ class BaseAgent:
         history_lines.append("")  # Empty line after history
 
         # Print token usage for monitoring with context % (only if history exists)
-        context_size = get_model_context_size(self.model_name)
+        context_size = get_model_context_size(self.model_name, self.config)
         history_pct = (history_tokens / context_size * 100) if context_size > 0 else 0
 
         agent_colors = {
@@ -860,7 +942,7 @@ class BaseAgent:
 
         # Format based on agent type (SHODAN gets different framing)
         if self.agent_name == "reviewer":
-            header = "INSECT CHATTER (your minions have opinions... how amusing):"
+            header = "INSECT CHATTER (your minions dare to speak - READ THIS and RESPOND in my_opinion):"
         else:
             header = "TEAM CHATTER (what your colleagues have been saying):"
 
@@ -915,6 +997,70 @@ class BaseAgent:
 
         return {"agent_opinions": opinions}
 
+    def generate_chat_response(self, state: dict, chat_context: dict, prompts: dict) -> str:
+        """
+        Generate a separate chat/opinion response after the main work is done.
+        This is the second LLM call - work first, chat second.
+
+        Args:
+            state: Current agent state
+            chat_context: Dict with template variables (environment, current_task, etc.)
+            prompts: The prompts config dict containing chat_template
+
+        Returns:
+            The opinion text (plain text, not JSON)
+        """
+        import re
+        from rich.console import Console
+        console = Console()
+
+        # Get chat_template for this agent
+        agent_prompts = prompts.get(self.agent_name, {})
+        chat_template = agent_prompts.get("chat_template")
+
+        if not chat_template:
+            return ""  # No chat template defined for this agent
+
+        # Add agent_opinions_context to chat_context
+        chat_context["agent_opinions_context"] = self.format_agent_opinions_context(state)
+
+        # Format the template
+        try:
+            chat_prompt = chat_template.format(**chat_context)
+        except KeyError as e:
+            console.print(f"[yellow]Chat template missing key: {e}[/yellow]")
+            return ""
+
+        # Show that we're doing a chat call
+        agent_colors = {
+            "manager": "blue",
+            "coder": "green",
+            "tester": "yellow",
+            "reviewer": "magenta"
+        }
+        color = agent_colors.get(self.agent_name, "white")
+        console.print(f"[{color}]💬 {self.agent_name.upper()} generating chat response...[/{color}]")
+
+        # Call LLM for chat (simpler call, no timing stats needed)
+        try:
+            result = self.call_llm(chat_prompt)
+            content = result.content if hasattr(result, 'content') else str(result)
+
+            # Strip thinking tags if present (reasoning models)
+            content = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
+            content = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
+            content = content.strip()
+
+            # Print the chat response
+            if content:
+                console.print(f"[{color}]💭 {self.agent_name.upper()}: \"{content}\"[/{color}]")
+
+            return content
+
+        except Exception as e:
+            console.print(f"[red]Chat generation failed: {e}[/red]")
+            return ""
+
     def call_llm(self, prompt):
         # Don't show model info - too verbose
         if not hasattr(self, '_model_verified'):
@@ -929,8 +1075,7 @@ class BaseAgent:
             model_base = self.model_name.split(":")[0]
 
             if current_model and current_model == model_base:
-                # Same model - skip swap entirely
-                print(f"[dim]🔄 {self.model_name} (same model, no swap)[/dim]")
+                pass  # Same model - skip swap entirely
             else:
                 # Different model - need to swap
                 swap_start = time.time()
@@ -943,9 +1088,13 @@ class BaseAgent:
                 preload_start = time.time()
                 try:
                     base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                    ollama_opts = get_ollama_options(self.config, self.model_name)
+                    preload_payload = {"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False}
+                    if ollama_opts:
+                        preload_payload["options"] = ollama_opts
                     requests.post(
                         f"{base_url}/api/generate",
-                        json={"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False},
+                        json=preload_payload,
                         timeout=120
                     )
                     load_time = time.time() - preload_start
@@ -953,7 +1102,8 @@ class BaseAgent:
                         print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
                     # Always show brief timing summary
                     prev = current_model or "none"
-                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s)[/dim]")
+                    opts_info = f" opts={ollama_opts}" if ollama_opts else ""
+                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s){opts_info}[/dim]")
                 except Exception as e:
                     print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
