@@ -14,9 +14,11 @@ conda activate C:\Users\tobia\miniconda3\envs\langgraph-rl
 - **Reviewer/SHODAN** (frontier API model): Reviews code+results, approves/rejects, manages Divine Codex
 
 ### Training Phases (per environment)
-1. **Validation** — Quick smoke test (does code run?)
-2. **Optimization** — Full training to reach reward threshold
-3. **Demo** — Record video of trained agent with RecordVideo
+1. **Validation** — Quick smoke test (does code run? ~2% timeout, 5000 steps max)
+2. **Optimization** — Full training to reach reward threshold + model saved to `best_model.zip`
+3. **Demo** — Tester's deterministic video recording (loads saved model, no LLM code generation)
+
+Phase transitions happen INSIDE Manager's `__call__` — Manager updates the phase, clears old feedback, and immediately generates a new task for the new phase in the same call. This ensures Coder always gets a phase-appropriate task.
 
 ### Key Files
 - `config/project.yaml` — Main config (environments, models, settings)
@@ -42,7 +44,7 @@ conda activate C:\Users\tobia\miniconda3\envs\langgraph-rl
 - `shodan_rules` — SHODAN's Divine Codex (persistent rules injected into Coder prompt)
 
 ### Docker Sandbox
-- RL code runs in `rl-sandbox:latest` container (isolated, GPU-enabled)
+- RL code runs in `citadel-rl:latest` container (isolated, GPU-enabled)
 - Network disabled, memory limited, code mounted read-only
 - Video files written to mounted output directory
 
@@ -53,10 +55,20 @@ conda activate C:\Users\tobia\miniconda3\envs\langgraph-rl
 - Codex changes, phase transitions, environment switches logged
 - Designed to be shareable on GitHub
 
+### Deterministic Demo Video Recording
+The demo phase does NOT rely on LLM-generated code. Instead:
+1. Coder is prompted to always `model.save("/workspace/output/best_model.zip")` after optimization
+2. Tester finds the `.zip` model file and stores `best_model_path` in state
+3. In demo phase, Tester generates a hardcoded Python script (`generate_video_script()`) that:
+   - Auto-detects SB3 algorithm (tries PPO/SAC/A2C/DQN/TD3)
+   - Wraps env with RecordVideo
+   - Runs 5 evaluation episodes
+   - Falls back to LLM flow only if deterministic script fails
+
 ## Working Conventions
 - Tee aktiivisesti repoon ohjaavia readme-tiedostoja
 - Pyri tekemään CLAUDE.MD tiedostoja kaikkialle tarpeellisiin paikkoihin
-- Päivitä CLAUDE.md vastaamaan nykyistä projektin tilaa muutosten jälkeen
+- Päivitä CLAUDE.md JA README.md vastaamaan nykyistä projektin tilaa AINA kun teet muutoksia
 - Olen transhumanisti ja nautin yhteistyöstä - olet minulle kollega
 
 ## RecordVideo API (CRITICAL - prevents demo phase loops)

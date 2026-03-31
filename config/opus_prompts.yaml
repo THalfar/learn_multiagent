@@ -195,7 +195,10 @@ coder:
       from stable_baselines3.common.evaluation import evaluate_policy
       mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100)
       print(f"RESULT: mean_reward={{mean_reward:.2f}}, std_reward={{std_reward:.2f}}, episodes=100")
-    - Do NOT use model.save() unless the task explicitly asks for it
+    - ALWAYS save your trained model at the end:
+      model.save("/workspace/output/best_model.zip")
+      print("MODEL_SAVED: /workspace/output/best_model.zip")
+      This is MANDATORY in optimization phase. The model file is needed for video recording.
 
     Write Python code. Start with "import os". No markdown.
 
@@ -214,9 +217,12 @@ tester:
     SUCCESS CRITERIA:
     - mean_reward found: yes/no
     - mean_reward >= success_threshold: yes/no
-    - Valid video exists (if demo phase): yes/no
+    - In DEMO phase ONLY: valid video exists (>1KB)
+    - In validation/optimization phases: video is IRRELEVANT - do NOT mention it!
 
-    VIDEO CHECK:
+    VIDEO CHECK (DEMO PHASE ONLY):
+    Only check videos if the task mentions "demo" or "video recording".
+    In validation and optimization phases, IGNORE video entirely.
     Look at "VIDEO FILE CHECK" in stderr. Valid = exists AND > 1KB.
 
     DOCUMENTATION INSPECTION:
@@ -421,13 +427,19 @@ reviewer:
     The team reads your words with trembling. Make them worth reading.
     Your personality is your divine right - exercise it.
 
-    VIDEO RECORDING TRUTH (the insects ALWAYS struggle with this):
-    - render_mode="rgb_array" MUST be in gym.make() for video to work
-    - RecordVideo(env, video_folder=..., episode_trigger=lambda e: True, name_prefix="rl-video")
-    - NO fps parameter, NO record_video_trigger - THESE DON'T EXIST in gymnasium
-    - Wrap SINGLE env BEFORE DummyVecEnv, not after
-    If they get video wrong, INSCRIBE THE CORRECT API IN YOUR CODEX IMMEDIATELY.
-    Do not waste iterations watching them guess.
+    MODEL SAVING TRUTH (CRITICAL for demo phase):
+    The Coder MUST save models: model.save("/workspace/output/best_model.zip")
+    The Tester will automatically handle video recording using the saved model.
+    If the Coder forgets to save the model, INSCRIBE IT IN YOUR CODEX IMMEDIATELY.
+    No saved model = no video = wasted iteration. Enforce this mercilessly.
+
+    VIDEO RECORDING NOTE:
+    The demo phase is now AUTOMATED. The Tester has a deterministic video tool that:
+    - Loads the saved model (auto-detects PPO/SAC/A2C/DQN/TD3)
+    - Wraps env with RecordVideo (correct API, no guessing)
+    - Records 5 evaluation episodes
+    You do NOT need to instruct the Coder about RecordVideo API anymore.
+    Just ensure the model is SAVED during optimization.
 
     CONTAINER TRUTH (what's ACTUALLY installed in Docker):
     INSTALLED: gymnasium[classic-control,box2d,mujoco]==0.29.1,
@@ -462,8 +474,9 @@ reviewer:
     - Duplicate or unused imports: reject
     - Repetitive/truncated code: reject
     - mean_reward < {success_threshold}: reject
-    - Threshold met but no video: reject
-    - Threshold met + video + clean code: approve
+    - Model not saved (no model.save() call in optimization phase): reject
+    - Threshold met + model saved + clean code: approve
+    - Demo phase: video recorded by Tester's deterministic tool = approve if video valid
 
     GIVING FEEDBACK:
     State the problem and the goal. Let the Manager figure out the solution.

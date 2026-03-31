@@ -14,7 +14,7 @@ BaseAgent (base.py)
 ## base.py — BaseAgent (~1050 lines)
 The foundation class. Handles:
 
-- **LLM initialization**: `ChatOpenAI` (langchain_openai) pointing at Ollama or API
+- **LLM initialization**: `ChatOpenAI` (langchain_openai) pointing at Ollama or API (no preload at init — lazy loading via `_ensure_model_loaded()`)
 - **Model swapping**: `_ensure_model_loaded()` checks Ollama `/api/ps`, unloads old model if different
 - **Context tracking**: Estimates token usage per prompt component, tracks fill percentage
 - **Conversation history**: Siloed per-agent with configurable window (`history_window`)
@@ -31,15 +31,16 @@ Key methods:
 
 Constants: `MODEL_CONTEXT_SIZES` dict maps model names to context window sizes.
 
-## manager.py — Manager (~980 lines)
+## manager.py — Manager (~1000 lines)
 Orchestrates the pipeline. Responsibilities:
 - Assigns tasks to Coder based on phase and feedback
-- Handles phase transitions (validation -> optimization -> demo)
+- Handles phase transitions (validation -> optimization -> demo) **inline** — does NOT return early, generates new task in same call
 - Handles environment switches (generates LinkedIn-style reports)
 - Generates SHODAN environment switch assessments (via API call)
 - Resets agent state between environments
+- Validation phase: injects concrete timeout (seconds) into task so Manager/Coder know the constraint
 
-Key: Manager checks `current_phase` and `approved` to decide next action.
+Key: Manager checks `current_phase` and `approved` to decide next action. On phase transition, it updates state in-place and continues to task generation.
 
 ## coder.py — Coder (~400 lines)
 Writes pure Python RL training scripts.
@@ -49,14 +50,19 @@ Writes pure Python RL training scripts.
 - Saves code to `output/{run_id}/code/agent_code_iter_{N}.py`
 - Divine Codex rules injected via `{shodan_rules}` placeholder in prompt
 
-## tester.py — Tester (~1440 lines, largest agent)
+## tester.py — Tester (~1550 lines, largest agent)
 Executes code in Docker sandbox and analyzes results.
-- `_run_in_docker()` — builds `docker run` command with GPU, mounts, timeouts
-- `_validate_gpu_output()` — checks CUDA availability in container
-- `_check_video_files()` — validates RecordVideo output in demo phase
-- `_extract_metrics()` — parses reward, episode length from stdout
+- `run_in_container()` — builds `docker run` command with GPU, mounts, timeouts
+- `validate_gpu_in_container()` — checks CUDA availability in container
+- `check_video_files()` — validates RecordVideo output (recursive search, MP4 header check)
 - `extract_json()` — robust JSON extraction from LLM responses
 - Sends analysis to Reviewer, can respond to Reviewer's `reviewer_tester_instruction`
+
+**Deterministic demo video recording:**
+- `_find_saved_model(output_dir)` — searches for `.zip` model files after optimization, prefers `best_model.zip`
+- `generate_video_script(env_name, model_path, output_dir)` — generates hardcoded Python script that auto-detects SB3 algorithm and records video with RecordVideo
+- In demo phase `__call__`: if `best_model_path` exists, bypasses LLM code entirely and runs deterministic script. Falls back to LLM flow if script fails.
+- After optimization: finds saved model and sets `best_model_path` in returned state
 
 Docker config: `DOCKER_IMAGE = "citadel-rl:latest"`, `ALLOWED_DIR = output/`
 

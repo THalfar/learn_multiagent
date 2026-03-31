@@ -84,12 +84,15 @@ DO NOT CARE ABOUT:
 APPROVE (approved: true) when:
 ✓ mean_reward >= {success_threshold}
 ✓ Training completed successfully
+✓ Code includes model.save("/workspace/output/best_model.zip")
 ✓ Code quality acceptable
 
 REJECT (approved: false) when:
 ✗ mean_reward < {success_threshold} (keep training!)
 ✗ Training errors
 ✗ Reward not improving
+✗ No model.save() call - the model MUST be saved for demo video phase!
+  If missing, INSCRIBE in Codex: "ALWAYS model.save('/workspace/output/best_model.zip') after training"
 
 DO NOT CARE ABOUT:
 - Video recording (not needed yet - save time for training)
@@ -98,25 +101,23 @@ DO NOT CARE ABOUT:
         elif current_phase == "demo":
             phase_criteria = f"""
 ===============================================================================
-🎬 PHASE: DEMO - APPROVE if ANY valid video exists! BE DECISIVE!
+🎬 PHASE: DEMO - Video is recorded AUTOMATICALLY by Tester's deterministic tool!
 ===============================================================================
+The Tester loads the saved model (best_model.zip) and records video using
+a hardcoded script - NO LLM code generation involved. This is reliable.
+
 APPROVE (approved: true) when:
-✓ ANY valid video file exists (>1KB, .mp4 format) - CHECK THE VIDEO FILE CHECK IN TEST RESULTS
-✓ No fatal recording errors
+✓ Test results say "DEMO SUCCESS" with valid video(s)
+✓ ANY valid video file exists (>1KB)
 
 REJECT (approved: false) ONLY when:
-✗ No video file at all
-✗ Video file is 0 bytes or corrupt
-✗ RecordVideo wrapper crashes
+✗ No video file at all (deterministic script failed)
+✗ No saved model was found (Coder forgot model.save() in optimization)
 
-⚠️ STOP THE PERFECTIONIST LOOP:
-- Video quality DOESN'T MATTER - it just needs to exist and be valid
-- Don't reject for "not enough episodes" or "could be better"
-- If VIDEO FILE CHECK shows valid videos (>1KB), APPROVE IMMEDIATELY
-- You have WASTED iterations on video loops before. DO NOT REPEAT THIS.
-
-IF RECORDVIDEO FAILS (wrong API), INSCRIBE THIS IN YOUR CODEX:
-  "DEMO VIDEO: Use gym.make(env, render_mode='rgb_array'), then RecordVideo(env, video_folder=path, episode_trigger=lambda e: True, name_prefix='rl-video'). NO fps, NO record_video_trigger params."
+⚠️ BE DECISIVE:
+- If test results show valid videos, APPROVE IMMEDIATELY
+- Video quality doesn't matter - existence is sufficient
+- The deterministic tool handles RecordVideo API correctly - no API issues
 ===============================================================================
 """
         else:

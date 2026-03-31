@@ -40,9 +40,11 @@ Each environment goes through three phases:
 
 | Phase | Goal | Timeout |
 |-------|------|---------|
-| **Validation** | Does the code run without errors? | ~5% of base timeout |
-| **Optimization** | Reach the reward threshold | Full timeout |
-| **Demo** | Record video proof with RecordVideo | 5 minutes |
+| **Validation** | Does the code run without errors? | ~2% of base timeout |
+| **Optimization** | Reach the reward threshold, save model | Full timeout |
+| **Demo** | Deterministic video recording of saved model | 5 minutes |
+
+The Coder always saves the trained model (`best_model.zip`) after optimization. In the demo phase, the Tester bypasses LLM code generation entirely and runs a **deterministic video recording script** that auto-detects the SB3 algorithm, loads the saved model, and records evaluation episodes with RecordVideo. This eliminates the demo-phase loops that occurred when LLM-generated video code failed repeatedly.
 
 After all three phases pass, the team advances to the next environment.
 
@@ -110,7 +112,7 @@ The reviewer uses a frontier API model (e.g. Grok, Claude). All other agents run
 Install [Ollama](https://ollama.ai) and pull the models configured in `config/project.yaml`:
 
 ```bash
-ollama pull deepseek-r1:32b
+ollama pull qwq:32b
 ollama pull qwen3-coder:30b
 ```
 
@@ -179,10 +181,10 @@ environment_progression:
 
 ```yaml
 agent_llm:
-  manager: "deepseek-r1:32b"
-  coder: "deepseek-r1:32b"
-  tester: "deepseek-r1:32b"
-  reviewer: "api"              # Uses OPENAI_API_KEY from .env
+  manager: "qwq:32b"            # Reasoning model for task planning
+  coder: "qwen3-coder:30b"      # Specialized code generation
+  tester: "qwq:32b"             # Same as manager = zero model swaps
+  reviewer: "api"                # Uses OPENAI_API_KEY from .env
 ```
 
 ### Prompt sets
@@ -270,7 +272,7 @@ src/
     base.py                  # BaseAgent: LLM calls, history, context tracking, model swap
     manager.py               # Task assignment, phase transitions, env progression
     coder.py                 # RL training script generation
-    tester.py                # Docker execution, metric extraction, video validation
+    tester.py                # Docker execution, metric extraction, deterministic video recording
     reviewer.py              # Code review, approval/rejection, Divine Codex
   utils/
     conversation_logger.py   # GitHub markdown conversation logs

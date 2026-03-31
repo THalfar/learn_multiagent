@@ -161,38 +161,35 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
 
         if state.get("approved", False) and env_progression:
             # Vaihelogiikka: validation -> optimization -> demo -> seuraava env
+            # Instead of returning early, update phase and CONTINUE to generate a new task
             if current_phase == "validation":
-                # Validation OK -> siirry optimization-vaiheeseen
                 print(f"\n[bold green]{'='*60}[/bold green]")
                 print(f"[bold green]✅ VALIDATION PASSED! Code works, reward received.[/bold green]")
                 print(f"[bold cyan]➡️  Moving to OPTIMIZATION phase (full training)[/bold cyan]")
                 print(f"[bold green]{'='*60}[/bold green]\n")
-                # Log phase transition to conversation markdown
                 logger = state.get("conversation_logger")
                 if logger:
                     _env_name = env_progression[current_env_index].name if env_progression and current_env_index < len(env_progression) else "unknown"
                     logger.log_phase_transition("validation", "optimization", _env_name)
-                return {
-                    "current_phase": "optimization",
-                    "approved": False,  # Reset for optimization
-                    "iteration": 1,
-                }
+                # Update phase in state and continue to generate task below
+                current_phase = "optimization"
+                state = {**state, "current_phase": "optimization", "approved": False, "iteration": 0,
+                         "review_feedback": "PHASE TRANSITION: Validation passed. Now optimize to reach threshold.",
+                         "review_suggestions": ""}
+
             elif current_phase == "optimization":
-                # Optimization OK -> siirry demo-vaiheeseen
                 print(f"\n[bold green]{'='*60}[/bold green]")
                 print(f"[bold green]✅ OPTIMIZATION COMPLETE! Threshold achieved.[/bold green]")
                 print(f"[bold cyan]➡️  Moving to DEMO phase (record best model video)[/bold cyan]")
                 print(f"[bold green]{'='*60}[/bold green]\n")
-                # Log phase transition to conversation markdown
                 logger = state.get("conversation_logger")
                 if logger:
                     _env_name = env_progression[current_env_index].name if env_progression and current_env_index < len(env_progression) else "unknown"
                     logger.log_phase_transition("optimization", "demo", _env_name)
-                return {
-                    "current_phase": "demo",
-                    "approved": False,  # Reset for demo
-                    "iteration": 1,
-                }
+                current_phase = "demo"
+                state = {**state, "current_phase": "demo", "approved": False, "iteration": 0,
+                         "review_feedback": "PHASE TRANSITION: Optimization complete. Now record video of trained agent.",
+                         "review_suggestions": ""}
             elif current_phase == "demo":
                 # Demo OK -> siirry seuraavaan ympäristöön (normaali env switch)
                 print(f"\n[bold green]{'='*60}[/bold green]")
@@ -421,27 +418,34 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         # MONIVAIHEINEN TREENI: Phase-kohtainen tehtävänanto
         current_phase = state.get("current_phase", "validation")
         if current_phase == "validation":
+            # Calculate actual timeout so Manager knows the constraint
+            base_timeout = current_env.execution_timeout if current_env else 300
+            training_phases = getattr(self.config.project, 'training_phases', None)
+            multiplier = getattr(training_phases, 'validation_timeout_multiplier', 0.05) if training_phases else 0.05
+            val_timeout = max(10, int(base_timeout * multiplier))
             phase_instruction = f"""
 ===============================================================================
 🔬 PHASE: VALIDATION (Quick smoke test)
 ===============================================================================
 GOAL: Verify code WORKS - get ANY reward signal (threshold doesn't matter yet!)
-TIME: SHORT run only (~50k timesteps max, 5% of normal timeout)
-SUCCESS: Code runs without errors AND produces some reward (any number)
+
+⚠️  TIMEOUT: {val_timeout} SECONDS! Code MUST complete within {val_timeout}s!
+    - Use total_timesteps=5000 (NOT more!)
+    - Use n_envs=1 (NOT parallel envs!)
+    - Anything over 10k timesteps WILL timeout and waste an iteration!
+
+SUCCESS: Code runs without errors AND prints RESULT: mean_reward=X
 
 DO:
-- Write minimal working code
-- Use simple hyperparameters
-- Focus on correctness, not performance
-- NO video recording yet!
+- total_timesteps=5000, n_envs=1
+- Simple hyperparameters (defaults are fine)
 - Code MUST print "RESULT: mean_reward=X, std_reward=Y, episodes=Z"
 
 DON'T:
-- Optimize hyperparameters
-- Train for long
+- Train for more than 5000 steps (TIMEOUT!)
+- Use parallel envs (slow startup!)
 - Add video recording
 - Use tensorboard_log (NOT INSTALLED!)
-- Use EvalCallback or Monitor wrapper
 ===============================================================================
 """
         elif current_phase == "optimization":
@@ -469,6 +473,7 @@ DON'T:
 """
         elif current_phase == "demo":
             best_model = state.get("best_model_path", "")
+            model_info = f"\nSAVED MODEL: {best_model}\nThe Tester will handle video recording automatically using the saved model." if best_model else "\nNO SAVED MODEL FOUND. Tester will fall back to LLM-generated code."
             phase_instruction = f"""
 ===============================================================================
 🎬 PHASE: DEMO (Record video of trained agent)
@@ -476,6 +481,11 @@ DON'T:
 GOAL: Record a .mp4 video of the agent playing the environment
 TIME: SHORT (5 minutes max)
 SUCCESS: Valid .mp4 video file >1KB exists in output directory
+{model_info}
+
+NOTE: The Tester has a DETERMINISTIC video recording tool that will
+automatically load the saved model, wrap with RecordVideo, and record
+evaluation episodes. No complex code needed from the Coder.
 
 TELL THE CODER TO USE THIS EXACT PATTERN:
   1. env = gym.make("{current_env_name}", render_mode="rgb_array")
@@ -483,7 +493,7 @@ TELL THE CODER TO USE THIS EXACT PATTERN:
   2. from gymnasium.wrappers import RecordVideo
      env = RecordVideo(env, video_folder="/workspace/output/iter_N/",
          episode_trigger=lambda e: True, name_prefix="rl-video")
-  3. Train briefly (50k steps) OR load saved model
+  3. Load saved model: model = PPO.load("/workspace/output/best_model.zip")
   4. Run 3-5 evaluation episodes
   5. env.close()
 
@@ -492,9 +502,6 @@ CRITICAL API RULES:
 - NO fps parameter (DOESN'T EXIST!)
 - NO record_video_trigger (OLD API - DOESN'T EXIST!)
 - Wrap SINGLE env BEFORE DummyVecEnv, not after
-- If no saved model exists, retrain briefly (50k steps is fast)
-
-DO NOT let the Coder guess the API. Give them the EXACT pattern above.
 ===============================================================================
 """
         else:
@@ -970,6 +977,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "iteration": 1,  # LangGraph adds this automatically due to operator.add
             "current_env_index": current_env_index,  # Preserve environment index
             "solved_environments": solved_environments,  # Preserve solved environments
+            "current_phase": state.get("current_phase", "validation"),  # Preserve phase (may have changed)
+            "approved": state.get("approved", False),  # Preserve approval state (reset on phase change)
         }
 
         # Merge history update and opinion update into result

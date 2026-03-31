@@ -188,44 +188,9 @@ class BaseAgent:
             # Check if model loading messages should be shown
             show_loading = getattr(config.agents, 'show_model_loading', False)
 
-            # Check if the required model is already loaded (skip swap if same)
-            current_model = get_loaded_ollama_model(config.ollama.base_url)
-            model_base = model_name.split(":")[0]  # Strip tag for comparison
-
-            if current_model and current_model == model_base:
-                # Same model already loaded - skip unload/load!
-                if show_loading:
-                    print(f"[dim]✓ Model {model_name} already loaded, skipping swap[/dim]")
-            else:
-                # Different model or none loaded - need to swap
-                if current_model and show_loading:
-                    print(f"[dim]Swapping {current_model} → {model_name}[/dim]")
-
-                # Unload any existing models before using new one (prevents VRAM conflicts with 30B models)
-                unload_ollama_models(config.ollama.base_url, verbose=show_loading)
-
-                # Preload the model explicitly so we see loading time
-                if show_loading:
-                    print(f"[dim]Loading model {model_name}...[/dim]")
-                preload_start = time.time()
-                try:
-                    base_url = config.ollama.base_url.replace("/v1", "").rstrip("/")
-                    ollama_opts = get_ollama_options(config, model_name)
-                    preload_payload = {"model": model_name, "prompt": "hi", "keep_alive": "5m", "stream": False}
-                    if ollama_opts:
-                        preload_payload["options"] = ollama_opts
-                    requests.post(
-                        f"{base_url}/api/generate",
-                        json=preload_payload,
-                        timeout=120  # 2 minutes for model loading
-                    )
-                    preload_time = time.time() - preload_start
-                    if show_loading:
-                        print(f"[dim]  ✓ Model loaded ({preload_time:.1f}s)[/dim]")
-                    if ollama_opts:
-                        print(f"[dim]  Ollama options: {ollama_opts}[/dim]")
-                except Exception as e:
-                    print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+            # Skip preload at init time — _ensure_model_loaded() handles it before first LLM call
+            # This avoids loading 3 models sequentially at startup when only the first is needed
+            pass
 
             # Use Ollama with specified model
             # Coder gets reasonable token limit (typical RL script = 100-200 lines = ~2000 tokens)

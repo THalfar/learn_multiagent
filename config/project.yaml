@@ -130,12 +130,13 @@ llm:
   model: "grok-4-1-fast-reasoning"
 
 # LLM routing - which agent uses which model (starting model for each agent)
-# Claude's picks for emergent behavior experiment:
+# Yöajo-optimoitu: coder = erikoistunut koodausmalli, manager+tester = sama malli (1 swap/iter)
+# Molemmat mahtuvat 32GB VRAM:iin kokonaan -> nopea inferenssi
 agent_llm:
-  manager:   "deepseek-r1:32b"
-  reviewer:  "api"                                  # SHODAN (frontier model)
-  coder:   "qwen3-coder-next:q4_K_M"   # ~50GB SOTA coder - käyttää ollama model_options
-  tester: "deepseek-r1:32b"  # 🔓 Vapautettu analyytikko vs SHODAN!
+  manager:   "qwq:32b"                                                   # ~19GB - syväajattelu, pisin reasoning-ketju
+  reviewer:  "api"                                                       # SHODAN (frontier model)
+  coder:     "qwen3-coder:30b"                                           # ~18GB - erikoistunut koodaaja
+  tester:    "qwq:32b"                                                   # ~19GB - sama kuin manager = 0 swappia
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu
@@ -170,15 +171,11 @@ adaptive_model_switching:
   model_pools:
     coder:
       models:
-        - "qwen3-coder-next:q4_K_M"               # 🔒 ~50GB - SOTA coder (käyttää model_options)
-        - "qwen3-coder:30b"                       # 🔒 ~18GB - koodaaja
-        - "qwen2.5-coder:14b"                     # 🔒 ~9GB - kevyt koodaaja        
+        - "qwen3-coder:30b"                       # 🔒 ~18GB - erikoistunut koodaaja
+        - "qwen2.5-coder:14b"                     # 🔒 ~9GB - kevyt koodaaja
         - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
         - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        - "deepseek-r1:32b"
-        - "phi4"
-        - "gemma2:9b" # 🔒 ~9GB - kevyt
-        - "starcoder2:15b"
+        - "deepseek-r1:32b"                       # 🔒 ~19GB - reasoning
       
 
     manager:
@@ -213,10 +210,7 @@ ollama:
   options:             # Kaikille Ollama-malleille
     num_gpu: 999       # Kaikki mahdolliset layerit GPU:lle
     num_thread: 8      # 9800X3D: 8 fyysistä ydintä (HT ei auta LLM-inferenssiin)
-  model_options:       # Per-malli overridet - iso malli tarvitsee KV cache rajoituksen
-    "qwen3-coder-next:q4_K_M":
-      num_ctx: 4096    # KV cache pienemmäksi -> lisää layereitä GPU:lle (50GB malli, 32GB VRAM)
-      num_batch: 256   # Pienempi batch = vähemmän muistia
+  model_options: {}    # Per-malli overridet (tyhjä - kaikki mallit mahtuvat VRAM:iin)
 
 # GPU/VRAM settings for RL training
 gpu:
@@ -250,7 +244,7 @@ shodan_rules:
 # Swap this to use different prompt configurations (e.g. prompts_v2.yaml, prompts_aggressive.yaml)
 prompts_file: "config/opus_prompts.yaml"
 
-test_name: "opus_codex"
+test_name: "opus_codex_2"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VERBOSE/LOGGING SETTINGS - Hallitsee konsolitulosteen määrää
