@@ -100,7 +100,7 @@ video:
 
 # Agent loop settings - Claude's emergent behavior experiment
 agents:
-  max_iterations: 24
+  max_iterations: 100
   show_thinking: false  # Show agent thinking process (reasoning model output)
   show_coder_output: false  # Show the code that Coder generates (visually formatted)
   show_model_loading: false  # Show Ollama model load/unload debug messages (turn on for debugging)
@@ -114,7 +114,7 @@ agents:
     tester: 5      # Medium memory - remembers recent tests for comparison
     reviewer: 30   # SHODAN remembers EVERYTHING - the omniscient overseer
     env_switch_reports: 5  # More history of environment transitions
-    agent_opinions: 25  # Rich dialogue history - see emergent personalities develop
+    agent_opinions: 10  # Riittävä konteksti, ei bloattaa prompteja (25 oli liikaa)
 
   # Agent opinions - the emergent dialogue experiment
   # SHODAN is opinionated, others develop personalities in response
@@ -122,7 +122,7 @@ agents:
     enabled: true   # Master switch ON
     manager: true   # Will the "useful idiot" develop opinions under SHODAN's rule?
     coder: false    # Pure code, no personality
-    tester: true    # The abliterated model gets a voice - interesting!
+    tester: false   # Disabled: hallusinoi vanhoja viestejä, tuhlaa ~40s/iter
     reviewer: true  # SHODAN WILL share opinions. Many opinions.
 
 # LLM settings
@@ -135,8 +135,8 @@ llm:
 agent_llm:
   manager:   "qwq:32b"                                                   # ~19GB - syväajattelu, pisin reasoning-ketju
   reviewer:  "api"                                                       # SHODAN (frontier model)
-  coder:     "qwen3-coder:30b"                                           # ~18GB - erikoistunut koodaaja
-  tester:    "qwq:32b"                                                   # ~19GB - sama kuin manager = 0 swappia
+  coder:     "deepseek-r1:32b"                                           # ~19GB - reasoning auttaa ymmärtämään tehtävän oikein
+  tester:    "deepseek-r1:32b"                                                   # ~19GB - sama kuin manager = 0 swappia
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu

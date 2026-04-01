@@ -918,12 +918,16 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         logger = state.get("conversation_logger")
         if logger:
             logger.log_iteration_start(expected_iteration, current_env_name)
+            t = getattr(self, 'last_timing', None)
             logger.log_manager(
                 iteration=expected_iteration,
                 task=next_task,
                 reasoning=reasoning,
                 environment=current_env_name,
-                success_threshold=current_success_threshold
+                success_threshold=current_success_threshold,
+                duration=t.duration if t else 0,
+                tokens_in=t.tokens_in if t else 0,
+                tokens_out=t.tokens_out if t else 0,
             )
 
         # Create guidance for reviewer (what manager wanted)

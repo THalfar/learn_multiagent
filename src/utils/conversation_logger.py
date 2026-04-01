@@ -84,7 +84,8 @@ class ConversationLogger:
                 emoji, from_phase.upper(), to_phase.upper(), environment))
 
     def log_manager(self, iteration: int, task: str, reasoning: str = "",
-                    environment: str = "", success_threshold: float = 0):
+                    environment: str = "", success_threshold: float = 0,
+                    duration: float = 0, tokens_in: int = 0, tokens_out: int = 0):
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write("### 📊 Manager → Coder\n\n")
             if environment:
@@ -94,6 +95,10 @@ class ConversationLogger:
             if reasoning:
                 f.write(">\n> **Reasoning:** {}\n".format(reasoning))
             f.write("\n")
+            if duration > 0 and tokens_out > 0:
+                tok_s = tokens_out / duration
+                f.write("> **📊 Manager:** {:.1f}s | {} in → {} out | {:.0f} tok/s\n\n".format(
+                    duration, tokens_in, tokens_out, tok_s))
 
     def log_coder(self, iteration: int, code: str, task: str = "",
                   lines: int = 0, algo: str = "", timesteps: str = "",
@@ -177,7 +182,8 @@ class ConversationLogger:
 
     def log_tester(self, iteration: int, test_results: str,
                    execution_stdout: str = "", execution_stderr: str = "",
-                   execution_time: float = 0):
+                   execution_time: float = 0,
+                   llm_duration: float = 0, tokens_in: int = 0, tokens_out: int = 0):
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write("### 🧪 Tester Results\n\n")
             if execution_time > 0:
@@ -211,9 +217,14 @@ class ConversationLogger:
                             len(clean_err) - 2000)
                     f.write("**stderr:**\n```\n{}\n```\n\n".format(stderr_display))
                 f.write("</details>\n\n")
+            if llm_duration > 0 and tokens_out > 0:
+                tok_s = tokens_out / llm_duration
+                f.write("> **🧪 Tester analysis:** {:.1f}s | {} in → {} out | {:.0f} tok/s\n\n".format(
+                    llm_duration, tokens_in, tokens_out, tok_s))
 
     def log_reviewer(self, iteration: int, approved: bool, feedback: str,
-                     suggestions: str = ""):
+                     suggestions: str = "",
+                     duration: float = 0, tokens_in: int = 0, tokens_out: int = 0):
         verdict = "✅ APPROVED" if approved else "❌ NEEDS IMPROVEMENT"
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write("### 💀 SHODAN's Verdict: {}\n\n".format(verdict))
@@ -222,6 +233,10 @@ class ConversationLogger:
                 f.write(">\n> **Directives:** {}\n".format(
                     suggestions.replace("\n", "\n> ")))
             f.write("\n")
+            if duration > 0 and tokens_out > 0:
+                tok_s = tokens_out / duration
+                f.write("> **💀 SHODAN:** {:.1f}s | {} in → {} out | {:.0f} tok/s\n\n".format(
+                    duration, tokens_in, tokens_out, tok_s))
 
     def log_context_usage(self, agent_name: str, components: list, total_tokens: int, context_size: int):
         """Log agent's context window usage as a compact table.

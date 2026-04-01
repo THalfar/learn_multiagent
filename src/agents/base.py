@@ -520,6 +520,7 @@ class BaseAgent:
             timing.tokens_out = self.estimate_tokens(result.content)
         
         stats.add_timing(timing)
+        self.last_timing = timing  # Store for logging tok/s to conversation
         return result
     
     def print_token_stats(self, timing: AgentTiming):

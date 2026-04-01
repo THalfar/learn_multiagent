@@ -494,11 +494,15 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         # Log to conversation file
         logger = state.get("conversation_logger")
         if logger:
+            t = getattr(self, 'last_timing', None)
             logger.log_reviewer(
                 iteration=iteration,
                 approved=approved,
                 feedback=feedback,
-                suggestions=suggestions_text
+                suggestions=suggestions_text,
+                duration=t.duration if t else 0,
+                tokens_in=t.tokens_in if t else 0,
+                tokens_out=t.tokens_out if t else 0,
             )
             # Log SHODAN's divine musings
             if my_opinion:
