@@ -177,7 +177,7 @@ class BaseAgent:
         if model_name == "api":
             # Use Grok API from .env
             self.llm = ChatOpenAI(
-                model=os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning"),
+                model=os.getenv("LLM_MODEL", "grok-4.3"),
                 base_url=os.getenv("OPENAI_BASE_URL"),
                 api_key=os.getenv("OPENAI_API_KEY"),
                 temperature=0,
@@ -193,9 +193,11 @@ class BaseAgent:
             pass
 
             # Use Ollama with specified model
-            # Coder gets reasonable token limit (typical RL script = 100-200 lines = ~2000 tokens)
-            # Too high limit causes repetition loops, too low truncates valid code
-            coder_max_tokens = 2500 if agent_name == "coder" else None
+            # Coder token limit. NOTE: qwen3.6 is a THINKING model - it spends tokens on
+            # reasoning (returned in a separate 'reasoning' field) BEFORE the code, and that
+            # reasoning counts against max_tokens. A low cap (2500) was eaten by reasoning so
+            # NO code reached 'content'. 10000 leaves room for reasoning + the actual code.
+            coder_max_tokens = 10000 if agent_name == "coder" else None
 
             self.llm = ChatOpenAI(
                 model=model_name,
@@ -389,7 +391,7 @@ class BaseAgent:
         if new_model == "api":
             # API model
             self.llm = ChatOpenAI(
-                model=os.getenv("LLM_MODEL", "grok-4-1-fast-reasoning"),
+                model=os.getenv("LLM_MODEL", "grok-4.3"),
                 base_url=os.getenv("OPENAI_BASE_URL"),
                 api_key=os.getenv("OPENAI_API_KEY"),
                 temperature=0,
@@ -403,7 +405,7 @@ class BaseAgent:
             try:
                 base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
                 ollama_opts = get_ollama_options(self.config, new_model)
-                preload_payload = {"model": new_model, "prompt": "hi", "keep_alive": "5m", "stream": False}
+                preload_payload = {"model": new_model, "prompt": "hi", "keep_alive": getattr(self.config.ollama, 'keep_alive', '5m'), "stream": False}
                 if ollama_opts:
                     preload_payload["options"] = ollama_opts
                 requests.post(
@@ -420,7 +422,7 @@ class BaseAgent:
                 console.print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
 
             # Create new LLM instance
-            coder_max_tokens = 2500 if self.agent_name == "coder" else None
+            coder_max_tokens = 10000 if self.agent_name == "coder" else None
             self.llm = ChatOpenAI(
                 model=new_model,
                 base_url=self.config.ollama.base_url,
@@ -444,7 +446,7 @@ class BaseAgent:
                 self.model_name = chaos_model
                 # Päivitä LLM instanssi
                 if chaos_model != "api":
-                    coder_max_tokens = 2500 if self.agent_name == "coder" else None
+                    coder_max_tokens = 10000 if self.agent_name == "coder" else None
                     self.llm = ChatOpenAI(
                         model=chaos_model,
                         base_url=self.config.ollama.base_url,
@@ -458,6 +460,7 @@ class BaseAgent:
         # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
             show_loading = getattr(self.config.agents, 'show_model_loading', False)
+            console = Console()
 
             # Check if same model is already loaded
             current_model = get_loaded_ollama_model(self.config.ollama.base_url)
@@ -466,35 +469,36 @@ class BaseAgent:
             if current_model and current_model == model_base:
                 pass  # Same model - skip swap entirely
             else:
-                # Different model - need to swap
+                # Different model - need to swap. Spinner so the pause doesn't look like a hang.
                 swap_start = time.time()
-                unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
-                unload_time = time.time() - swap_start
-
-                # Preload this agent's model so it's ready
-                if show_loading:
-                    print(f"[dim]Loading model {self.model_name}...[/dim]")
-                preload_start = time.time()
-                try:
-                    base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
-                    ollama_opts = get_ollama_options(self.config, self.model_name)
-                    preload_payload = {"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False}
-                    if ollama_opts:
-                        preload_payload["options"] = ollama_opts
-                    requests.post(
-                        f"{base_url}/api/generate",
-                        json=preload_payload,
-                        timeout=120
-                    )
-                    load_time = time.time() - preload_start
-                    if show_loading:
-                        print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
-                    # Always show brief timing summary
+                load_time = 0.0
+                ollama_opts = {}
+                swap_error = None
+                with console.status(f"[bold cyan]Swapping model -> {self.model_name}...", spinner="dots"):
+                    unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
+                    unload_time = time.time() - swap_start
+                    preload_start = time.time()
+                    try:
+                        base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                        ollama_opts = get_ollama_options(self.config, self.model_name)
+                        preload_payload = {"model": self.model_name, "prompt": "hi", "keep_alive": getattr(self.config.ollama, 'keep_alive', '5m'), "stream": False}
+                        if ollama_opts:
+                            preload_payload["options"] = ollama_opts
+                        requests.post(
+                            f"{base_url}/api/generate",
+                            json=preload_payload,
+                            timeout=120
+                        )
+                        load_time = time.time() - preload_start
+                    except Exception as e:
+                        swap_error = e
+                # Print summary AFTER the spinner stops (avoids interleaving)
+                if swap_error is not None:
+                    console.print(f"[yellow]  Warning: Model preload failed: {swap_error}[/yellow]")
+                else:
                     prev = current_model or "none"
                     opts_info = f" opts={ollama_opts}" if ollama_opts else ""
-                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s){opts_info}[/dim]")
-                except Exception as e:
-                    print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+                    console.print(f"[dim]{prev} -> {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s){opts_info}[/dim]")
 
         timing = AgentTiming(agent=self.agent_name, iteration=iteration)
         timing.start_time = time.time()
@@ -502,8 +506,23 @@ class BaseAgent:
         # Estimate input tokens
         timing.tokens_in = self.estimate_tokens(prompt)
         
-        # Don't log LLM calls - they're too verbose
-        result = self.llm.invoke(prompt)
+        # LLM call with retry on transient network errors (API connection drops, DNS failures)
+        max_retries = 3
+        spinner_console = Console()
+        for attempt in range(max_retries):
+            try:
+                with spinner_console.status(f"[bold green]{self.agent_name} thinking...", spinner="dots"):
+                    result = self.llm.invoke(prompt)
+                break
+            except Exception as e:
+                error_str = str(e).lower()
+                is_transient = any(k in error_str for k in ["connection", "timeout", "getaddrinfo", "dns", "reset by peer", "503", "502", "429"])
+                if is_transient and attempt < max_retries - 1:
+                    wait = 30 * (attempt + 1)
+                    print(f"[yellow]⚠️  LLM call failed ({type(e).__name__}), retrying in {wait}s... (attempt {attempt+1}/{max_retries})[/yellow]")
+                    time.sleep(wait)
+                else:
+                    raise
         
         timing.end_time = time.time()
         timing.duration = timing.end_time - timing.start_time
@@ -514,7 +533,13 @@ class BaseAgent:
             if usage:
                 timing.tokens_in = usage.get('prompt_tokens', timing.tokens_in)
                 timing.tokens_out = usage.get('completion_tokens', 0)
-        
+                # Cached (cheaper) prompt tokens, if the API reports them
+                details = usage.get('prompt_tokens_details') or {}
+                if isinstance(details, dict):
+                    timing.tokens_cached = details.get('cached_tokens', 0) or 0
+        # Mark whether this was a paid API call (only the api/reviewer agent costs money)
+        timing.is_api = (self.model_name == "api")
+
         # If no usage info, estimate output tokens
         if timing.tokens_out == 0 and hasattr(result, 'content'):
             timing.tokens_out = self.estimate_tokens(result.content)
@@ -1035,6 +1060,7 @@ class BaseAgent:
         # If using Ollama (not API), unload other models first and load this agent's model
         if self.model_name != "api":
             show_loading = getattr(self.config.agents, 'show_model_loading', False)
+            console = Console()
 
             # Check if same model is already loaded
             current_model = get_loaded_ollama_model(self.config.ollama.base_url)
@@ -1043,37 +1069,40 @@ class BaseAgent:
             if current_model and current_model == model_base:
                 pass  # Same model - skip swap entirely
             else:
-                # Different model - need to swap
+                # Different model - need to swap. Spinner so the pause doesn't look like a hang.
                 swap_start = time.time()
-                unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
-                unload_time = time.time() - swap_start
-
-                # Preload this agent's model so it's ready
-                if show_loading:
-                    print(f"[dim]Loading model {self.model_name}...[/dim]")
-                preload_start = time.time()
-                try:
-                    base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
-                    ollama_opts = get_ollama_options(self.config, self.model_name)
-                    preload_payload = {"model": self.model_name, "prompt": "hi", "keep_alive": "5m", "stream": False}
-                    if ollama_opts:
-                        preload_payload["options"] = ollama_opts
-                    requests.post(
-                        f"{base_url}/api/generate",
-                        json=preload_payload,
-                        timeout=120
-                    )
-                    load_time = time.time() - preload_start
-                    if show_loading:
-                        print(f"[dim]  ✓ Model loaded ({load_time:.1f}s)[/dim]")
-                    # Always show brief timing summary
+                load_time = 0.0
+                ollama_opts = {}
+                swap_error = None
+                with console.status(f"[bold cyan]Swapping model -> {self.model_name}...", spinner="dots"):
+                    unload_ollama_models(self.config.ollama.base_url, verbose=show_loading)
+                    unload_time = time.time() - swap_start
+                    preload_start = time.time()
+                    try:
+                        base_url = self.config.ollama.base_url.replace("/v1", "").rstrip("/")
+                        ollama_opts = get_ollama_options(self.config, self.model_name)
+                        preload_payload = {"model": self.model_name, "prompt": "hi", "keep_alive": getattr(self.config.ollama, 'keep_alive', '5m'), "stream": False}
+                        if ollama_opts:
+                            preload_payload["options"] = ollama_opts
+                        requests.post(
+                            f"{base_url}/api/generate",
+                            json=preload_payload,
+                            timeout=120
+                        )
+                        load_time = time.time() - preload_start
+                    except Exception as e:
+                        swap_error = e
+                # Print summary AFTER the spinner stops (avoids interleaving)
+                if swap_error is not None:
+                    console.print(f"[yellow]  Warning: Model preload failed: {swap_error}[/yellow]")
+                else:
                     prev = current_model or "none"
                     opts_info = f" opts={ollama_opts}" if ollama_opts else ""
-                    print(f"[dim]🔄 {prev} → {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s){opts_info}[/dim]")
-                except Exception as e:
-                    print(f"[yellow]  Warning: Model preload failed: {e}[/yellow]")
+                    console.print(f"[dim]{prev} -> {self.model_name} (unload {unload_time:.1f}s, load {load_time:.1f}s){opts_info}[/dim]")
 
-        result = self.llm.invoke(prompt)
+        spinner_console = Console()
+        with spinner_console.status(f"[bold green]{self.agent_name} thinking...", spinner="dots"):
+            result = self.llm.invoke(prompt)
 
         return result
 

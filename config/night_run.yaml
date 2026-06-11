@@ -1,0 +1,194 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# YÖAJO — koko env-skaala, vaikeat mukana, max-laatu paikalliset mallit
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tarkoitus: yön yli -ajo joka näyttää tiimin KYVYN vaikeissa ympäristöissä.
+# Koko progressio helposta vaikeaan (CartPole -> ... -> BipedalWalker), playbook +
+# Divine Codex kerryttävät oppia ympäristöjen välillä. Managerin env-vaihtojen
+# höpinät ja SHODANin tuomiot päällä (show_env_switch_chatter + agent_opinions).
+#
+# MALLIT (RTX 5090, 32GB):
+#   Coder            qwen3-coder:30b      (18GB, MoE 3B-aktiivinen -> nopea)
+#   Manager + Tester qwen3:30b-thinking   (19GB, thinking) -> SAMA malli -> ei swappia niiden välillä
+#   Reviewer/SHODAN  api (Grok)           -> pilvifrontier, paras tuomari
+#   HUOM: coder 18GB + reasoner 19GB eivät mahdu yhtä aikaa -> swap coderin kohdalla (~2x/iter,
+#         näkyy spinnerinä). Manager<->Tester swap-vapaa (sama malli).
+#
+# Aja (yöksi):  $env:PYTHONUTF8=1; python main.py config/night_run.yaml
+# Live:         python scripts/live_view.py output/<run_id>
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Koko progressio (sama kuin project.yaml) - tarkoituksella vaikeat mukana
+environment_progression:
+
+  - name: "CartPole-v1"
+    max_episode_steps: 500
+    success_threshold: 475
+    execution_timeout: 300
+    obs_dim: 4
+    action_type: "discrete"
+    action_dim: 2
+    device: "cpu"
+
+  - name: "CartPole-v0"
+    max_episode_steps: 200
+    success_threshold: 195
+    execution_timeout: 300
+    obs_dim: 4
+    action_type: "discrete"
+    action_dim: 2
+    device: "cpu"
+
+  - name: "Pendulum-v1"
+    max_episode_steps: 200
+    success_threshold: -300
+    execution_timeout: 600
+    obs_dim: 3
+    action_type: "continuous"
+    action_dim: 1
+    device: "auto"
+
+  - name: "MountainCarContinuous-v0"
+    max_episode_steps: 999
+    success_threshold: -10
+    execution_timeout: 600
+    obs_dim: 2
+    action_type: "continuous"
+    action_dim: 1
+    device: "auto"
+
+  - name: "MountainCar-v0"
+    max_episode_steps: 200
+    success_threshold: -110     # HARD - sparse rewards
+    execution_timeout: 600
+    obs_dim: 2
+    action_type: "discrete"
+    action_dim: 3
+    device: "cpu"
+
+  - name: "LunarLander-v2"
+    max_episode_steps: 1000
+    success_threshold: 200
+    execution_timeout: 1800     # 30 min (Box2D)
+    obs_dim: 8
+    action_type: "discrete"
+    action_dim: 4
+    device: "auto"
+
+  - name: "BipedalWalker-v3"
+    max_episode_steps: 1600
+    success_threshold: 300      # HARD - complex continuous control
+    execution_timeout: 3600     # 60 min
+    obs_dim: 24
+    action_type: "continuous"
+    action_dim: 4
+    device: "auto"
+
+environment:
+  name: "CartPole-v1"
+  max_episode_steps: 500
+  obs_dim: 4
+  action_type: "discrete"
+  action_dim: 2
+  device: "cpu"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 1000            # Yöajo: anna pyöriä pitkään
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true        # Mallinvaihto näkyy spinnerinä, ei jumilta
+  show_env_switch_chatter: true   # Managerin LinkedIn-postaus + SHODANin jumalallinen arvio
+
+  history_window:
+    manager: 2
+    coder: 0
+    tester: 0                     # Tabula rasa: analysoi tuoreen ajon, ei papukaijaile omia aiempia (estää hallusinaatioloopin)
+    reviewer: 30                  # SHODAN muistaa kaiken
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  # Höpinät päällä: Manager + SHODAN persoonat
+  agent_opinions:
+    enabled: true
+    manager: true
+    coder: false
+    tester: false                 # hallusinoi vanhoja viestejä -> pois
+    reviewer: true                # SHODAN. Paljon mielipiteitä.
+
+llm:
+  model: "grok-4.3"
+
+# Manager + Tester sama malli -> ei swappia niiden välillä; coder erikseen; SHODAN = Grok
+agent_llm:
+  manager:   "qwen3.6:27b"   # paras nykyinen yleismalli; sama kaikille -> 0 mallinvaihtoa
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"
+  reviewer:  "api"           # SHODAN (Grok frontier)
+
+# Yöajossa POIS -> pysyy valituissa malleissa, ennustettava (failsafe hoitaa jumit)
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "qwen3-coder:30b"
+    manager:
+      models:
+        - "qwen3:30b-thinking"
+    tester:
+      models:
+        - "qwen3:30b-thinking"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "qwen3-coder:30b":    { num_ctx: 32768 }
+    "qwen3:30b-thinking": { num_ctx: 32768 }
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.02
+  demo_timeout_seconds: 300
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/opus_prompts.yaml"
+
+# Yöajo: anna vaikealle env:lle reilusti yrityksiä, mutta siirry eteenpäin jos tyssää.
+# Progress-aware: laskuri NOLLAUTUU kun reward paranee, joten tämä raja koskee vain
+# jumiutunutta (ei-edistyvää) envä -> edistyvä env saa niin monta iteraatiota kuin tarvitsee.
+failsafe:
+  skip_after_consecutive_failures: 15
+
+test_name: "yoajo"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true

@@ -18,6 +18,7 @@ Methods:
 - `log_agent_chat()` — personality opinions as blockquotes
 - `log_codex_change()` — Divine Codex add/remove
 - `log_environment_switch()` — shows Winning Code + LinkedIn post + SHODAN assessment
+- `log_video(env_name, video_files, mean_reward=None)` — embeds demo MP4s inline (relative-path `<video>` + link; called from tester.py demo-success block using `check_video_files()` output)
 - `log_final_summary()` — metrics table
 
 ### model_switcher.py — Adaptive model switching
@@ -44,6 +45,18 @@ Functions:
 - `print_environment_switch_bombardment()` — detailed stats tables when switching envs
 - `print_manager_report()` — Manager's LinkedIn-style post
 - `print_reviewer_cynical_report()` — SHODAN's assessment
+
+### code_lint.py — Deterministic pre-Docker lint
+Fast (~ms) structural checks before the expensive container run:
+1. `ast.parse` syntax; 2. exact env name in `*.make(...)`; 3. import whitelist (container stack);
+4. optional bloat budget; 5. **SB3 kwarg validation** — curated signature sets
+(`SB3_ALGO_KWARGS`, `SB3_LEARN_KWARGS`, `HER_RBK_KEYS`) catch hallucinated kwargs
+(e.g. `online_sample_strategy`) and `reset_num_timesteps=False` as hard errors;
+6. **checkpoint-resume contract** — `check_resume_contract(code)` /
+`lint_code(..., require_resume=True)`: load model + `load_replay_buffer` +
+`RESUMED:` proof print + `save_replay_buffer` are all required in optimization
+when a checkpoint exists. Used by the Coder's lint-retry loop and the Tester's
+pre-Docker resume gate.
 
 ### timer.py — Timing and statistics
 - `AgentTiming` — per-call timing with token counts

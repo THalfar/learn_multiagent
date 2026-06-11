@@ -353,8 +353,42 @@ class ConversationLogger:
                 f.write("\n")
             f.write("---\n\n")
 
+    def log_video(self, env_name: str, video_files: list, mean_reward=None):
+        """Embed demo MP4 videos into the conversation log.
+
+        video_files: list of dicts each with at least 'path' (absolute MP4 path) and
+        optional 'size_mb'. Renders an HTML5 <video> tag (plays in local markdown
+        viewers) plus a relative-path link fallback (works on GitHub). Paths are made
+        relative to output_dir so links resolve from conversation.md's location.
+        """
+        valid = [vf for vf in (video_files or []) if vf and vf.get("path")]
+        if not valid:
+            return
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write("\n### 🎬 Demo Video — {}\n\n".format(env_name))
+            if mean_reward is not None:
+                f.write("> [!TIP]\n")
+                f.write("> Trained model evaluated — **mean reward: {:.1f}**\n\n".format(mean_reward))
+            total_mb = sum((vf.get("size_mb") or 0) for vf in valid)
+            f.write("<details open>\n")
+            f.write("<summary>🎥 <b>{} episode video(s)</b> ({:.2f} MB total)</summary>\n\n".format(
+                len(valid), total_mb))
+            for vf in valid:
+                path = vf["path"]
+                try:
+                    rel = os.path.relpath(path, self.output_dir).replace(os.sep, "/")
+                except Exception:
+                    rel = os.path.basename(path)
+                label = os.path.basename(path)
+                size = vf.get("size_mb")
+                size_str = " ({:.2f} MB)".format(size) if size else ""
+                f.write('<video controls width="480" src="{}"></video>\n\n'.format(rel))
+                f.write("- [{}]({}){}\n".format(label, rel, size_str))
+            f.write("\n</details>\n\n")
+
     def log_final_summary(self, total_iterations: int, success: bool,
-                          total_time: float, solved_environments: list = None):
+                          total_time: float, solved_environments: list = None,
+                          skipped_environments: list = None, cost: dict = None):
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write("\n---\n\n")
             status = "✅ SUCCESS" if success else "⏸️ INCOMPLETE"
@@ -367,10 +401,19 @@ class ConversationLogger:
             f.write("| Total Iterations | {} |\n".format(total_iterations))
             f.write("| Total Time | {} ({:.0f}s) |\n".format(time_str, total_time))
             if solved_environments:
-                f.write("| Environments Solved | {} |\n".format(
+                f.write("| Environments Solved (genuine) | {} |\n".format(
                     len(solved_environments)))
                 f.write("| Solved | {} |\n".format(
                     ', '.join(solved_environments)))
+            if skipped_environments:
+                f.write("| Environments Skipped (failsafe, NOT solved) | {} |\n".format(
+                    len(skipped_environments)))
+                f.write("| Skipped | {} |\n".format(
+                    ', '.join(skipped_environments)))
+            if cost and cost.get("api_calls", 0) > 0:
+                f.write("| API cost (SHODAN / grok-4.3) | ${:.4f} |\n".format(cost["total_cost_usd"]))
+                f.write("| API tokens | {:,} in ({:,} cached) / {:,} out |\n".format(
+                    cost["input_tokens"], cost["cached_input_tokens"], cost["output_tokens"]))
             f.write("| Status | {} |\n".format(status))
             f.write("| Ended | {} |\n\n".format(
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))

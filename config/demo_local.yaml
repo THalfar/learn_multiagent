@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEMO CONFIG (FULLY LOCAL) — "Kaikki pyörii yhdellä RTX 5090:llä, ei pilveä"
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sama kuin demo.yaml, MUTTA Reviewer/SHODAN on paikallinen malli (ei Grok-APIa).
+# Tarina AI-iltaan: koko tiimi — myös konejumala SHODAN — ajaa paikallisesti.
+#
+# Aja:  $env:PYTHONUTF8=1; python main.py config/demo_local.yaml
+#
+# HUOM: paikallinen SHODAN swappaa sisään kerran/iter (~10s, näkyy spinnerinä) koska
+# 19GB reviewer ei mahdu Coder+reasoner-parin kanssa yhtä aikaa. Tämä on OK — siitä
+# tulee hieno "konejumala latautuu" -hetki. Paikallisen reasonerin konteksti on
+# pienempi kuin Grokin (200K), joten pidä ajo lyhyenä (max_iterations alhaalla).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+environment_progression:
+
+  - name: "CartPole-v1"
+    max_episode_steps: 500
+    success_threshold: 475
+    execution_timeout: 300
+    obs_dim: 4
+    action_type: "discrete"
+    action_dim: 2
+    device: "cpu"
+
+  - name: "CartPole-v0"
+    max_episode_steps: 200
+    success_threshold: 195
+    execution_timeout: 300
+    obs_dim: 4
+    action_type: "discrete"
+    action_dim: 2
+    device: "cpu"
+
+environment:
+  name: "CartPole-v1"
+  max_episode_steps: 500
+  obs_dim: 4
+  action_type: "discrete"
+  action_dim: 2
+  device: "cpu"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 12
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true
+  show_env_switch_chatter: true
+
+  history_window:
+    manager: 2
+    coder: 0
+    tester: 0              # Tabula rasa: ei papukaijaile omia aiempia analyysejä (estää hallusinaatioloopin)
+    reviewer: 20            # Pienempi kuin pilvi-SHODANilla (30) -> paikallinen konteksti riittää
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  agent_opinions:
+    enabled: true
+    manager: true
+    coder: false
+    tester: false
+    reviewer: true
+
+llm:
+  model: "grok-4.3"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MALLIT — KAIKKI PAIKALLISIA (Reviewer mukaan lukien)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Reviewer/SHODAN paikallisena: huihui_ai/deepseek-r1-abliterated:32b (19GB, jo asennettu,
+#   "vapautettu" reasoning sopii konejumala-teemaan). Vaihtoehdot: "qwq:32b", "qwen3:30b-thinking".
+agent_llm:
+  manager:   "qwen3.6:27b"   # paras nykyinen yleismalli; sama kaikille -> 0 mallinvaihtoa
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"
+  reviewer:  "huihui_ai/deepseek-r1-abliterated:32b"   # PAIKALLINEN SHODAN (ei "api")
+
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "qwen3-coder:30b"
+    manager:
+      models:
+        - "qwen3:30b-thinking"
+    tester:
+      models:
+        - "qwen3:30b-thinking"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "qwen3-coder:30b":    { num_ctx: 32768 }
+    "qwen3:30b-thinking": { num_ctx: 32768 }
+    "huihui_ai/deepseek-r1-abliterated:32b": { num_ctx: 32768 }   # SHODANille reilu konteksti
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.02
+  demo_timeout_seconds: 300
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/opus_prompts.yaml"
+
+failsafe:
+  skip_after_consecutive_failures: 3
+
+test_name: "demo_local"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true

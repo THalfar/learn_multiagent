@@ -1,0 +1,127 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# VAIKEAMPI TESTI — LunarLander-v2 yhdellä jo asennetulla mallilla
+# ═══════════════════════════════════════════════════════════════════════════════
+# Kuten test_single.yaml, mutta haastavampi ympäristö (Box2D, jatkuva fysiikka,
+# tavoite 200). Näyttää demossa hienolta: laskeutuja säätää moottoreita.
+# Malli: huihui_ai/deepseek-r1-abliterated:32b (kaikki paikalliset agentit).
+#
+# Aja:  $env:PYTHONUTF8=1; python main.py config/test_hard.yaml
+# Live: python scripts/live_view.py output/<run_id>
+#
+# HUOM: LunarLander vie enemmän aikaa kuin CartPole (PPO tarvitsee ~500k-1M steppiä).
+# device: auto -> GPU-treeni Dockerissa (19GB LLM + pieni RL-MLP mahtuu 32GB:hen).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+environment_progression:
+
+  - name: "LunarLander-v2"
+    max_episode_steps: 1000
+    success_threshold: 200        # Virallinen kynnys: 200 / 100 jaksoa
+    execution_timeout: 600        # 10 min katto per treeni (PPO GPU:lla ehtii)
+    obs_dim: 8
+    action_type: "discrete"
+    action_dim: 4
+    device: "auto"
+
+environment:
+  name: "LunarLander-v2"
+  max_episode_steps: 1000
+  obs_dim: 8
+  action_type: "discrete"
+  action_dim: 4
+  device: "auto"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 12              # Vaikeampi env -> annetaan enemmän yrityksiä
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true
+  show_env_switch_chatter: true
+
+  history_window:
+    manager: 2
+    coder: 0
+    tester: 5
+    reviewer: 30
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  agent_opinions:
+    enabled: true
+    manager: true
+    coder: false
+    tester: false
+    reviewer: true
+
+llm:
+  model: "grok-4.3"
+
+agent_llm:
+  manager:   "huihui_ai/deepseek-r1-abliterated:32b"
+  coder:     "huihui_ai/deepseek-r1-abliterated:32b"
+  tester:    "huihui_ai/deepseek-r1-abliterated:32b"
+  reviewer:  "api"
+
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "huihui_ai/deepseek-r1-abliterated:32b"
+    manager:
+      models:
+        - "huihui_ai/deepseek-r1-abliterated:32b"
+    tester:
+      models:
+        - "huihui_ai/deepseek-r1-abliterated:32b"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "huihui_ai/deepseek-r1-abliterated:32b": { num_ctx: 32768 }
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.02
+  demo_timeout_seconds: 300
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/opus_prompts.yaml"
+
+failsafe:
+  skip_after_consecutive_failures: 6
+
+test_name: "test_hard"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true

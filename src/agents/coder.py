@@ -51,6 +51,27 @@ class Coder(BaseAgent):
         last_part = "\n".join(lines[-100:])
         return f"PREVIOUS CODE (iteration {iteration - 1}, {line_count} lines, showing first 100 + last 100):\n{first_part}\n\n... ({line_count - 200} lines omitted) ...\n\n{last_part}"
 
+    def _format_recent_attempts(self, state: dict) -> str:
+        """Show the Coder its last couple of attempts + the Tester's diagnosis and the
+        Reviewer's verdict, so it does not repeat a corrected mistake. The Coder is
+        otherwise stateless (history_window=0), so this is its only self-memory."""
+        attempts = state.get("recent_attempts", []) or []
+        if not attempts:
+            return ""
+        lines = ["", "=== YOUR RECENT ATTEMPTS (learn from them - do NOT repeat a corrected mistake) ==="]
+        for att in attempts[-2:]:
+            it = att.get("iter", "?")
+            verdict = att.get("verdict", "?")
+            diag = (att.get("diagnosis") or "").strip()
+            reason = (att.get("reason") or "").strip()
+            lines.append(f"[iter {it}] verdict: {verdict}")
+            if diag:
+                lines.append(f"  Tester diagnosis: {diag[:400]}")
+            if reason:
+                lines.append(f"  Reviewer said: {reason[:300]}")
+        lines.append("=== end recent attempts ===")
+        return "\n".join(lines)
+
     def _print_code_summary(self, code: str, state: dict):
         """
         Print a quick visual summary of what coder produced.
@@ -233,30 +254,43 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         # Get device (cpu/gpu/auto) from environment config
         device = current_env.device if current_env and hasattr(current_env, 'device') else "cpu"
 
-        # Format SHODAN's Divine Codex rules for coder's prompt
-        shodan_rules = state.get("shodan_rules", [])
-        shodan_rules_enabled = getattr(self.config, 'shodan_rules', None) and self.config.shodan_rules.enabled
+        # B4: render the procedural SKILL substrate into the Coder's prompt (replaces the
+        # flat Codex). Skills are PROCEDURES ("read max_episode_steps from env.spec ...")
+        # not values, and the relevant ones are selected by env/tags. Falls back to the
+        # legacy flat shodan_rules list if no skill_store is present in state.
+        skill_store = state.get("skill_store", None)
+        env_name_now = current_env.name if current_env else self.config.environment.name
+        _tags = []
+        _lname = env_name_now.lower()
+        if "panda" in _lname or "fetch" in _lname:
+            _tags += ["goal", "her", "manipulation", "robotics"]
+        if current_env and getattr(current_env, "metric", "reward") == "success_rate":
+            _tags += ["goal", "success_rate"]
 
-        if shodan_rules and shodan_rules_enabled:
-            rules_lines = [
-                "",
-                "╔══════════════════════════════════════════════════════════════╗",
-                "║  MANDATORY RULES — These OVERRIDE the task below.          ║",
-                "║  If task conflicts with a rule, OBEY THE RULE.             ║",
-                "╚══════════════════════════════════════════════════════════════╝",
-            ]
-            for i, rule_entry in enumerate(shodan_rules):
-                rules_lines.append(f"  [{i}] {rule_entry['rule']}")
-            rules_lines.append("")
-            shodan_rules_text = "\n".join(rules_lines)
-
-            # Print rules if verbose enabled
-            if self.config.verbose.shodan_rules:
-                console.print(f"\n[magenta]📜 SHODAN's Divine Codex ({len(shodan_rules)} rules active):[/magenta]")
-                for i, rule_entry in enumerate(shodan_rules):
-                    console.print(f"  [dim][{i}][/dim] {rule_entry['rule']}")
+        if skill_store is not None:
+            shodan_rules_text = skill_store.render_for_coder(env_name=env_name_now, tags=_tags)
+            # Also surface any flat Codex notes SHODAN inscribed via the legacy prompt_rules
+            # field (tactical, per-iteration), so its learning reaches the Coder regardless of
+            # which channel it used. CRITICAL for the BLIND run (empty skill library at start).
+            _legacy = state.get("shodan_rules", []) or []
+            if _legacy:
+                _notes = "\n".join(f"  - {r['rule']}" for r in _legacy)
+                shodan_rules_text = (shodan_rules_text + "\n\n=== CODEX NOTES (tactical, from SHODAN) ===\n" + _notes).strip()
+            if self.config.verbose.shodan_rules and shodan_rules_text:
+                _n = len(skill_store.relevant(env_name=env_name_now, tags=_tags))
+                console.print(f"\n[magenta]📜 SKILLS injected ({_n} relevant) + {len(_legacy)} codex note(s):[/magenta]")
+                console.print(f"[dim]{shodan_rules_text[:600]}{'...' if len(shodan_rules_text) > 600 else ''}[/dim]")
         else:
-            shodan_rules_text = ""
+            # Legacy fallback: flat shodan_rules list
+            shodan_rules = state.get("shodan_rules", [])
+            shodan_rules_enabled = getattr(self.config, 'shodan_rules', None) and self.config.shodan_rules.enabled
+            if shodan_rules and shodan_rules_enabled:
+                rules_lines = ["", "=== CODEX RULES (learned lessons - respect them) ==="]
+                for i, rule_entry in enumerate(shodan_rules):
+                    rules_lines.append(f"  [{i}] {rule_entry['rule']}")
+                shodan_rules_text = "\n".join(rules_lines)
+            else:
+                shodan_rules_text = ""
 
         # Try formatting with shodan_rules, fall back without if template doesn't have it
         try:
@@ -277,9 +311,12 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
                 device=device,
             )
         
-        # Get code context (diff or random snippet)
+        # Get code context (previous iteration's code)
         code_context = self._get_code_context(state)
         context_section = f"\n\n{code_context}" if code_context else ""
+
+        # A3: the Coder's own recent attempts + why they were rejected (self-memory)
+        recent_section = self._format_recent_attempts(state)
 
         # Add conversation history (siloed - only this agent's previous messages)
         # Note: Coder has history_window=0, so this will be empty
@@ -303,40 +340,71 @@ env = RecordVideo(env, video_folder="/workspace/output/iter_{iteration}/", episo
 ========================================================="""
             task_template += demo_reference
 
-        full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section
+        full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section + recent_section
 
         # Print context breakdown before LLM call (coder has no team chatter)
         prompt_tokens = self.estimate_tokens(full_prompt)
         self.print_context_breakdown(state, prompt_tokens, "")
 
-        response = self.call_llm_timed(full_prompt, state["stats"], state.get("iteration", 0))
-        
-        # Print thinking process if using reasoning model (but no other output)
-        self.print_thinking(response.content)
-        
-        # Print token statistics
+        # Deterministic pre-Docker lint as a fast feedback arc ("pre-Tester"):
+        # generate -> lint -> if STRUCTURAL errors (wrong env, syntax, bad imports),
+        # regenerate with the lint feedback (up to K retries) BEFORE the expensive
+        # Docker run. Catches the #1 time-wasters in milliseconds, not a 20-min timeout.
+        # The Tester still runs the real container and does the semantic diagnosis.
+        from src.utils.code_lint import lint_code
+        env_name_for_lint = current_env.name if current_env else self.config.environment.name
+        LINT_MAX_RETRIES = 2
+        # Checkpoint-resume contract: in optimization with an existing checkpoint the
+        # script MUST resume model+buffer and print RESUMED proof (the Tester gates on
+        # it) - lint it here so the Coder fixes it BEFORE wasting a Docker run.
+        _require_resume = bool(
+            state.get("current_phase", "validation") == "optimization"
+            and state.get("best_model_path", "")
+        )
+
+        def _extract_code(text: str) -> str:
+            import re
+            c = text.strip()
+            c = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', c, flags=re.DOTALL | re.IGNORECASE)
+            c = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', c, flags=re.DOTALL | re.IGNORECASE)
+            if c.startswith('```python'):
+                c = c[9:].lstrip()
+            elif c.startswith('```'):
+                c = c[3:].lstrip()
+            if c.endswith('```'):
+                c = c[:-3].rstrip()
+            return c.strip()
+
+        lint_feedback_block = ""
+        response = None
+        code = ""
+        for _attempt in range(LINT_MAX_RETRIES + 1):
+            response = self.call_llm_timed(full_prompt + lint_feedback_block, state["stats"], state.get("iteration", 0))
+            self.print_thinking(response.content)
+            code = _extract_code(response.content)
+
+            lint_res = lint_code(code, env_name=env_name_for_lint, require_resume=_require_resume)
+            if lint_res.ok:
+                break
+            if _attempt == LINT_MAX_RETRIES:
+                console.print(f"[yellow]⚠ LINT still failing after {LINT_MAX_RETRIES} retries - Tester backstop will catch it[/yellow]")
+                break
+            console.print(f"[yellow]🔎 LINT rejected (attempt {_attempt + 1}/{LINT_MAX_RETRIES + 1}) - quick fix before Docker:[/yellow]")
+            console.print(f"[dim]{lint_res.feedback()}[/dim]")
+            lint_feedback_block = (
+                "\n\n=== LINT FEEDBACK ===\nYOUR PREVIOUS SCRIPT (the one being rejected):\n"
+                "```python\n" + code + "\n```\n"
+                "It failed these structural checks - fix EXACTLY these, change nothing else:\n"
+                + lint_res.feedback() + "\n=== end lint feedback ===\n"
+            )
+
+        # Print token statistics (latest call)
         stats_obj = state["stats"]
         iteration = state.get("iteration", 0)
         agent_timings = [t for t in stats_obj.timings if t.agent == self.agent_name and t.iteration == iteration]
         if agent_timings:
             latest_timing = agent_timings[-1]
             self.print_token_stats(latest_timing)
-        
-        code = response.content.strip()
-
-        # Remove any thinking tags from code (shouldn't be there, but safety check)
-        import re
-        code = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
-        code = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', code, flags=re.DOTALL | re.IGNORECASE)
-
-        # Strip markdown code blocks
-        if code.startswith('```python'):
-            code = code[9:].lstrip()
-        elif code.startswith('```'):
-            code = code[3:].lstrip()
-        if code.endswith('```'):
-            code = code[:-3].rstrip()
-        code = code.strip()
 
         # Light diagnostics (no auto-fixing - trust the model)
         code = self._check_code_quality(code)

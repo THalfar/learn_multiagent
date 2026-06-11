@@ -3,6 +3,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 from datetime import datetime
 
+# ── API pricing (USD per 1M tokens) ──────────────────────────────────────────
+# Only the api/reviewer agent (SHODAN) is billed; local Ollama agents are free.
+# Defaults: xAI grok-4.3 (2026-06). Edit here if prices change.
+PRICE_INPUT_PER_1M = 1.25
+PRICE_CACHED_INPUT_PER_1M = 0.20
+PRICE_OUTPUT_PER_1M = 2.50
+
+
 @dataclass
 class AgentTiming:
     """Track timing for a single agent call"""
@@ -13,6 +21,8 @@ class AgentTiming:
     duration: float = 0
     tokens_in: int = 0
     tokens_out: int = 0
+    tokens_cached: int = 0  # cached prompt tokens (billed at the lower rate; api only)
+    is_api: bool = False    # True if this was a paid API call (reviewer/SHODAN)
 
 @dataclass
 class RunStatistics:
@@ -94,7 +104,29 @@ class RunStatistics:
             agent: self.get_agent_token_stats(agent)
             for agent in ["manager", "coder", "tester", "reviewer"]
         }
-    
+
+    def get_cost(self) -> dict:
+        """API cost in USD. Only api/reviewer calls (SHODAN) are billed; local agents
+        are free. Cached prompt tokens are billed at the lower cached rate."""
+        api_timings = [t for t in self.timings if getattr(t, 'is_api', False)]
+        tokens_in = sum(t.tokens_in for t in api_timings)
+        cached = sum(getattr(t, 'tokens_cached', 0) for t in api_timings)
+        uncached = max(0, tokens_in - cached)
+        tokens_out = sum(t.tokens_out for t in api_timings)
+        input_cost = uncached * PRICE_INPUT_PER_1M / 1_000_000
+        cached_cost = cached * PRICE_CACHED_INPUT_PER_1M / 1_000_000
+        output_cost = tokens_out * PRICE_OUTPUT_PER_1M / 1_000_000
+        return {
+            "api_calls": len(api_timings),
+            "input_tokens": tokens_in,
+            "cached_input_tokens": cached,
+            "output_tokens": tokens_out,
+            "input_cost_usd": input_cost,
+            "cached_input_cost_usd": cached_cost,
+            "output_cost_usd": output_cost,
+            "total_cost_usd": input_cost + cached_cost + output_cost,
+        }
+
     def get_iteration_stats(self, iteration: int) -> dict:
         iter_timings = [t for t in self.timings if t.iteration == iteration]
         agent_stats = {}
@@ -183,6 +215,15 @@ class RunStatistics:
             code_info = f" [{code_lines} lines]" if code_lines > 0 else ""
             print(f"Iter {i}: {iter_stats['total_time']:.1f}s total [{agents_str}]{code_info}")
 
+        cost = self.get_cost()
+        if cost["api_calls"] > 0:
+            c_in = cost["input_cost_usd"] + cost["cached_input_cost_usd"]
+            print("\n💰 API COST (SHODAN / grok-4.3 — local agents are free):")
+            print("-"*60)
+            print(f"  Input:  {cost['input_tokens']:,} tok ({cost['cached_input_tokens']:,} cached @ ${PRICE_CACHED_INPUT_PER_1M}/1M) -> ${c_in:.4f}")
+            print(f"  Output: {cost['output_tokens']:,} tok -> ${cost['output_cost_usd']:.4f}")
+            print(f"  TOTAL:  ${cost['total_cost_usd']:.4f}  ({cost['api_calls']} API calls)")
+
         print("="*60)
     
     def save_to_file(self, filepath: str):
@@ -198,7 +239,9 @@ class RunStatistics:
                     "iteration": t.iteration,
                     "duration": t.duration,
                     "tokens_in": t.tokens_in,
-                    "tokens_out": t.tokens_out
+                    "tokens_out": t.tokens_out,
+                    "tokens_cached": getattr(t, 'tokens_cached', 0),
+                    "is_api": getattr(t, 'is_api', False)
                 } for t in self.timings
             ],
             "agent_stats": {
@@ -209,7 +252,8 @@ class RunStatistics:
                 agent: self.get_agent_token_stats(agent)
                 for agent in ["manager", "coder", "tester", "reviewer"]
             },
-            "code_stats": self.get_code_stats()
+            "code_stats": self.get_code_stats(),
+            "cost": self.get_cost()
         }
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2)

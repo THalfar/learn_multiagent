@@ -78,7 +78,7 @@ def print_agent_transition(from_agent, to_agent):
     console.print(f"\n{'-' * 70}\n  {message}\n{'-' * 70}\n")
 
 
-def print_final_summary(run_id, iterations, success, total_time, solved_environments=None):
+def print_final_summary(run_id, iterations, success, total_time, solved_environments=None, skipped_environments=None):
     """Print final run summary"""
     console = _get_console()
     lines = []
@@ -89,6 +89,10 @@ def print_final_summary(run_id, iterations, success, total_time, solved_environm
     lines.append(f"Iterations: {iterations}")
     lines.append(f"Total time: {total_time/60:.1f} minutes")
     lines.append(f"Success: {'[green]YES![/green]' if success else '[red]Not yet[/red]'}")
+    if solved_environments:
+        lines.append(f"[green]Solved ({len(solved_environments)}): {', '.join(solved_environments)}[/green]")
+    if skipped_environments:
+        lines.append(f"[yellow]Skipped ({len(skipped_environments)}, failsafe): {', '.join(skipped_environments)}[/yellow]")
     lines.append("")
     lines.append(f"Output: output/{run_id}/")
     if solved_environments:

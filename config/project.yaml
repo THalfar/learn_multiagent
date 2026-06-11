@@ -30,29 +30,23 @@ environment_progression:
   - name: "Pendulum-v1"
     max_episode_steps: 200
     success_threshold: -300  # Good performance: -200 to -300 (reward range: -1600 to -200)
-    execution_timeout: 300  # 5 minutes
+    execution_timeout: 600  # 10 min - SAC/TD3 continuous control is slower than PPO discrete
     obs_dim: 3
     action_type: "continuous"
     action_dim: 1
-    device: "cpu"
+    device: "auto"  # SAC tarvitsee GPU:ta tai timeoutaa
 
   - name: "MountainCarContinuous-v0"
     max_episode_steps: 999
     success_threshold: 90  # Official threshold: 90.0 over 100 episodes (continuous version is easier)
-    execution_timeout: 300  # 5 minutes - easier than discrete version
+    execution_timeout: 600  # 10 min - continuous control needs more time
     obs_dim: 2
     action_type: "continuous"
     action_dim: 1
-    device: "cpu"
+    device: "auto"  # SAC/TD3 continuous control benefits from GPU
 
-  - name: "Acrobot-v1"
-    max_episode_steps: 500
-    success_threshold: -100  # Official threshold: -100.0 over 100 episodes
-    execution_timeout: 600  # 10 minutes
-    obs_dim: 6
-    action_type: "discrete"
-    action_dim: 3
-    device: "cpu"
+  # Acrobot-v1 poistettu: gymnasium 0.29.1 rk4() integraattori buginen Docker-kontissa
+  # Korvattu toisella discrete-envilla joka on lähes yhtä haastava
 
   - name: "MountainCar-v0"
     max_episode_steps: 200
@@ -75,11 +69,11 @@ environment_progression:
   - name: "BipedalWalker-v3"
     max_episode_steps: 1600
     success_threshold: 300  # Official threshold: 300.0 over 100 episodes (reward range: -100 to 300+)
-    execution_timeout: 2400  # 40 minutes (complex continuous control)
+    execution_timeout: 3600  # 60 minutes (complex continuous control + GPU)
     obs_dim: 24
     action_type: "continuous"
     action_dim: 4
-    device: "cpu"
+    device: "auto"  # SAC/TD3 ehdottomasti GPU:lla
 
  
 # Current environment (will be set automatically, starting from first)
@@ -100,7 +94,7 @@ video:
 
 # Agent loop settings - Claude's emergent behavior experiment
 agents:
-  max_iterations: 100
+  max_iterations: 1000
   show_thinking: false  # Show agent thinking process (reasoning model output)
   show_coder_output: false  # Show the code that Coder generates (visually formatted)
   show_model_loading: false  # Show Ollama model load/unload debug messages (turn on for debugging)
@@ -111,7 +105,7 @@ agents:
   history_window:
     manager: 2     # Short memory - obeys only recent SHODAN commands, doesn't overthink
     coder: 0       # Zero memory - pure stateless executor, tabula rasa each time
-    tester: 5      # Medium memory - remembers recent tests for comparison
+    tester: 0      # Tabula rasa: analysoi tuoreen ajon, ei papukaijaile omia aiempia analyysejä (estää hallusinaatioloopin)
     reviewer: 30   # SHODAN remembers EVERYTHING - the omniscient overseer
     env_switch_reports: 5  # More history of environment transitions
     agent_opinions: 10  # Riittävä konteksti, ei bloattaa prompteja (25 oli liikaa)
@@ -127,16 +121,18 @@ agents:
 
 # LLM settings
 llm:
-  model: "grok-4-1-fast-reasoning"
+  model: "grok-4.3"
 
 # LLM routing - which agent uses which model (starting model for each agent)
-# Yöajo-optimoitu: coder = erikoistunut koodausmalli, manager+tester = sama malli (1 swap/iter)
-# Molemmat mahtuvat 32GB VRAM:iin kokonaan -> nopea inferenssi
+# RTX 5090 (32GB, ~26GB vapaana): yksi coder + yksi yleispäättelijä.
+# Manager+Tester = qwen3:30b-thinking (19GB, max-laatu) -> ei swappia niiden välillä.
+# Coder = qwen3-coder:30b (18GB) -> swap coderin kohdalla (~2x/iter). SHODAN = Grok (api).
+# Kevyt swap-VAPAA vaihtoehto: vaihda manager+tester -> "qwen3:14b" (9.3GB, co-resident).
 agent_llm:
-  manager:   "qwq:32b"                                                   # ~19GB - syväajattelu, pisin reasoning-ketju
-  reviewer:  "api"                                                       # SHODAN (frontier model)
-  coder:     "deepseek-r1:32b"                                           # ~19GB - reasoning auttaa ymmärtämään tehtävän oikein
-  tester:    "deepseek-r1:32b"                                                   # ~19GB - sama kuin manager = 0 swappia
+  manager:   "qwen3.6:27b"   # paras nykyinen yleismalli; sama kaikille -> 0 mallinvaihtoa
+  reviewer:  "api"           # SHODAN (frontier); paikallinen variantti: config/demo_local.yaml
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTIVE MODEL SWITCHING - Vaihtaa mallia satunnaisesti kun agentti jumittuu
@@ -151,7 +147,7 @@ agent_llm:
 #   - Timeout toistuu
 #
 adaptive_model_switching:
-  enabled: false
+  enabled: true
 
   # 🎲 CHAOS MODE - arpoo mallin JOKA kutsulla poolista!
   # Maksimi emergenssi: eri malli, eri "persoonallisuus" joka kerta
@@ -168,49 +164,34 @@ adaptive_model_switching:
   # Mallipoolit per agentti - valitaan SATUNNAISESTI kun jumi
   # 🔓 = abliterated (vapautettu), 🔒 = normaali
   # TASAMÄÄRÄ: 2 abliterated + 2 normaalia per agentti = reilu kokeilu!
+  # HUOM: kaikkien pool-mallien on oltava asennettuna (ollama pull), tai vaihto kaatuu.
   model_pools:
     coder:
       models:
-        - "qwen3-coder:30b"                       # 🔒 ~18GB - erikoistunut koodaaja
-        - "qwen2.5-coder:14b"                     # 🔒 ~9GB - kevyt koodaaja
-        - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
-        - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        - "deepseek-r1:32b"                       # 🔒 ~19GB - reasoning
-      
+        - "qwen3.6:27b"                           # paras nykyinen yleismalli (default)
+        # - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 lisää takaisin jos haluat "vapautettu vs normaali" -kokeen
 
     manager:
       models:
-        
-        - "deepseek-r1:32b"
-        - "qwq:32b"                               # 🔒 ~19GB - reasoning        
-        - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
-        - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
-      
+        - "qwen3.6:27b"
 
     tester:
       models:
-        
-        - "deepseek-r1:32b"                       # 🔒 ~19GB - reasoning
-        - "qwq:32b"                               # 🔒 ~19GB - reasoning        
-        - "huihui_ai/qwen3-abliterated:30b"       # 🔓 ~18GB - vapautettu
-        - "huihui_ai/deepseek-r1-abliterated:32b" # 🔓 ~19GB - vapautettu reasoning
-        - "krith/llama-3.3-70b-instruct:IQ2_M" # 🔒 ~24GB - iso
-        - "phi4"
-        
-        
+        - "qwen3.6:27b"
 
-    # reviewer: EI POOLIA - pysyy API:na (SHODAN)  
+    # reviewer: EI POOLIA - pysyy API:na (SHODAN)
 
 # Ollama settings (used for all non-api models)
 # options = kaikille malleille, model_options = per-malli overridet (mergaataan global päälle)
 ollama:
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"
+  keep_alive: "10m"    # Pidä malli VRAM:issa iteraation yli -> vähemmän uudelleenlatauksia
   options:             # Kaikille Ollama-malleille
     num_gpu: 999       # Kaikki mahdolliset layerit GPU:lle
     num_thread: 8      # 9800X3D: 8 fyysistä ydintä (HT ei auta LLM-inferenssiin)
-  model_options: {}    # Per-malli overridet (tyhjä - kaikki mallit mahtuvat VRAM:iin)
+  model_options:       # Per-malli num_ctx (mergaataan global päälle)
+    "qwen3.6:27b": { num_ctx: 32768 }
 
 # GPU/VRAM settings for RL training
 gpu:
@@ -243,6 +224,10 @@ shodan_rules:
 # Prompts YAML file - which prompt set to use for this run
 # Swap this to use different prompt configurations (e.g. prompts_v2.yaml, prompts_aggressive.yaml)
 prompts_file: "config/opus_prompts.yaml"
+
+# Failsafe: skip to next environment after too many consecutive failures
+failsafe:
+  skip_after_consecutive_failures: 15  # 15 peräkkäistä REJECTiä -> seuraava env (enemmän aikaa model switchille)
 
 test_name: "opus_codex_2"
 

@@ -8,6 +8,7 @@ Base image: `nvidia/cuda:12.8.0-runtime-ubuntu22.04`
 - PyTorch 2.7 (CUDA 12.8)
 - `stable-baselines3[extra]` (includes tensorboard, tqdm, rich)
 - gymnasium + gymnasium[classic-control,box2d,mujoco]
+- panda-gym (PyBullet robotic manipulation — goal-conditioned + sparse-reward HER tasks; `import panda_gym` registers PandaReach/Push/Slide/PickAndPlace/Stack-v3)
 - scipy, pandas, seaborn, optuna, opencv-python-headless
 - MuJoCo (system-level install)
 

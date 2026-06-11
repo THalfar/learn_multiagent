@@ -49,7 +49,15 @@ src/utils/            -- Banners, logging, model switching, timing
 | `current_phase` | `str` | "validation" / "optimization" / "demo" |
 | `shodan_rules` | `List[Dict]` | Divine Codex rules `[{"rule": str, "iteration": int}]` |
 | `current_env_index` | `int` | Index in environment_progression |
-| `solved_environments` | `List[str]` | Completed environment names |
+| `solved_environments` | `List[str]` | Genuinely solved env names (threshold met) |
+| `skipped_environments` | `List[str]` | Envs abandoned via failsafe (NOT solved) |
+| `best_reward_this_env` | `float` | Best real reward seen for current env (progress-aware failsafe) |
+| `best_reward_env_index` | `int` | Env index that `best_reward_this_env` refers to |
+| `total_env_steps` | `int` | Cumulative timesteps trained this env across chunks (reset on env switch) |
+| `metric_history` | `List` | RESULT value per optimization chunk this env — the curve Manager/SHODAN see |
+| `measured_sps` | `float` | Measured training steps/sec (runs ≥5000 steps) — Manager sizes chunks from it |
+| `resume_required` | `bool` | Optimization ran with an existing checkpoint (Tester sets) |
+| `resume_ok` | `bool` | stdout proved `RESUMED: buffer_transitions=N` (N>0) — Reviewer's resume gate |
 
 ## Conventions
 - `iteration` uses `Annotated[int, operator.add]` — LangGraph auto-adds return values

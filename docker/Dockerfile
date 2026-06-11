@@ -38,6 +38,16 @@ RUN pip install --no-cache-dir \
     optuna \
     opencv-python-headless
 
+# Robotic manipulation: panda-gym (PyBullet) for goal-conditioned + sparse-reward
+# tasks (the HER intelligence test). Separate layer so the big install above stays
+# cached on rebuild. PyBullet renders headless (rgb_array) without MuJoCo egl setup.
+RUN pip install --no-cache-dir panda-gym==3.0.7
+
+# Auto-register panda-gym envs on EVERY Python startup, so generated training code never
+# has to remember `import panda_gym`. A .pth file's "import" line runs at interpreter
+# start. This makes gym.make("PandaReach-v3") work even if the script forgets the import.
+RUN echo "import panda_gym" > /usr/local/lib/python3.10/dist-packages/zz_panda_autoload.pth
+
 # Create non-root user for security
 RUN useradd -m -u 1000 sandbox
 

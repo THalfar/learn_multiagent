@@ -23,6 +23,7 @@ class EnvironmentStep(BaseModel):
     name: str = Field(..., description="Gymnasium environment name")
     max_episode_steps: int = Field(default=500)
     success_threshold: float = Field(..., description="Reward threshold to consider solved")
+    metric: Literal["reward", "success_rate"] = Field(default="reward", description="Whether success_threshold is a raw mean_reward or a success_rate in [0,1] (goal-conditioned envs report is_success fraction)")
     execution_timeout: int = Field(default=900, description="Maximum execution time in seconds for tester (default: 900 = 15 minutes)")
     # Environment specs for Coder/Tester
     obs_dim: Optional[int] = Field(default=None, description="Observation space dimension")
@@ -83,6 +84,7 @@ class OllamaConfig(BaseModel):
     model_config = ConfigDict(extra='forbid', protected_namespaces=())  # Allow model_options field
     base_url: str
     api_key: str
+    keep_alive: str = Field(default="5m", description="How long Ollama keeps a model in VRAM after a call (e.g. '5m', '10m', '1h'). Longer = fewer reloads when models co-reside.")
     options: OllamaOptions = Field(default_factory=OllamaOptions, description="Global Ollama options for all models")
     model_options: Dict[str, OllamaOptions] = Field(default_factory=dict, description="Per-model option overrides (merged with global)")
 
@@ -108,6 +110,7 @@ class TrainingPhases(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool = Field(default=False, description="Enable multi-phase training")
     validation_timeout_multiplier: float = Field(default=0.05, description="Validation phase timeout as fraction of base (5% = 0.05)")
+    validation_timeout_floor: int = Field(default=60, description="Minimum validation timeout in seconds - framework/env startup (imports, CUDA init, pybullet) eats a FIXED cost the multiplier ignores; below this floor even a 500-step smoke test times out")
     demo_timeout_seconds: int = Field(default=300, description="Demo phase timeout in seconds")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -119,6 +122,11 @@ class ShodanRulesConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: bool = Field(default=False, description="Enable SHODAN's rule management power")
     max_rules: int = Field(default=20, description="Maximum number of active rules")
+
+class FailsafeConfig(BaseModel):
+    """Failsafe: skip to next environment after too many consecutive failures"""
+    model_config = ConfigDict(extra='forbid')
+    skip_after_consecutive_failures: int = Field(default=8, description="Skip env after N consecutive rejections")
 
 class VerboseConfig(BaseModel):
     """Verbose settings - control console output noise"""
@@ -183,9 +191,25 @@ class ProjectConfig(BaseModel):
         default_factory=ShodanRulesConfig,
         description="SHODAN's Divine Codex - reviewer adds persistent rules to coder's prompt"
     )
+    failsafe: FailsafeConfig = Field(
+        default_factory=FailsafeConfig,
+        description="Failsafe: skip to next environment after repeated failures"
+    )
     prompts_file: str = Field(
         default="config/prompts.yaml",
         description="Path to prompts YAML file - swap to use different prompt sets"
+    )
+    initial_codex_rules: list[str] = Field(
+        default_factory=list,
+        description="Pre-seed SHODAN's Codex with these rules at run start (e.g. an HER hint for the seeded experiment; empty = blind)"
+    )
+    initial_skills: list[dict] = Field(
+        default_factory=list,
+        description="Pre-seed the SkillStore (Phase B) with structured procedural skills. Each: name/when_to_use/procedure/pitfalls/verification/tags/status."
+    )
+    skills_dir: str = Field(
+        default="skills",
+        description="Directory for the persistent SkillStore (skills.json + <id>.SKILL.md). Learning accumulates across runs."
     )
     test_name: str
 
@@ -258,6 +282,18 @@ class Config:
     @property
     def shodan_rules(self) -> ShodanRulesConfig:
         return self.project.shodan_rules
+
+    @property
+    def initial_codex_rules(self) -> list[str]:
+        return self.project.initial_codex_rules
+
+    @property
+    def initial_skills(self) -> list[dict]:
+        return self.project.initial_skills
+
+    @property
+    def skills_dir(self) -> str:
+        return self.project.skills_dir
 
     def get_prompt(self, agent_name: str) -> Dict[str, str]:
         """Get prompt dict for agent (e.g. 'manager')."""

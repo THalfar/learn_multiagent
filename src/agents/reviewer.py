@@ -22,7 +22,8 @@ class Reviewer(BaseAgent):
 
         test_results = state.get("test_results", "")
         if test_results:
-            print(f"\n[yellow]Tester's analysis (from outputs only):[/yellow] {test_results}")
+            from rich.markup import escape as rich_escape
+            print(f"\n[yellow]Tester's analysis (from outputs only):[/yellow] {rich_escape(test_results)}")
 
         # Check if tester responded to SHODAN's previous request
         tester_response = state.get("tester_reviewer_response", "")
@@ -77,22 +78,52 @@ DO NOT CARE ABOUT:
 ===============================================================================
 """
         elif current_phase == "optimization":
+            # C1: cumulative status so SHODAN judges the CURVE, not a single noisy point
+            _tot_steps = state.get("total_env_steps", 0) or 0
+            _mh = state.get("metric_history", []) or []
+            _mh_str = ", ".join(f"{v:g}" for v in _mh[-10:]) if _mh else "(no completed chunks yet)"
+            _sps_note = ""
+            if state.get("measured_sps"):
+                _sps_note = f"\nMeasured training speed: ~{state['measured_sps']} steps/s."
+            _resume_note = ""
+            if state.get("best_model_path"):
+                _resume_note = ("\nA CHECKPOINT EXISTS. Every optimization iteration MUST resume it "
+                                "(model + replay buffer) - the Tester verifies the RESUMED proof line.")
             phase_criteria = f"""
 ===============================================================================
 🚀 PHASE: OPTIMIZATION - Approve if threshold ({success_threshold}) achieved!
 ===============================================================================
+CUMULATIVE STATUS (this env): {_tot_steps:,} total steps trained across chunks.
+Metric curve per chunk: {_mh_str}{_sps_note}{_resume_note}
+
 APPROVE (approved: true) when:
 ✓ mean_reward >= {success_threshold}
 ✓ Training completed successfully
-✓ Code includes model.save("/workspace/output/best_model.zip")
-✓ Code quality acceptable
+✓ Code quality acceptable (runs without crashes)
 
-REJECT (approved: false) when:
+REJECT (approved: false) ONLY when:
 ✗ mean_reward < {success_threshold} (keep training!)
-✗ Training errors
-✗ Reward not improving
-✗ No model.save() call - the model MUST be saved for demo video phase!
-  If missing, INSCRIBE in Codex: "ALWAYS model.save('/workspace/output/best_model.zip') after training"
+✗ Training crashes or errors
+✗ No metrics printed at all
+✗ RESUME CHECK FAILED in test results (the chunk didn't accumulate - fix the resume first)
+
+⚠️ DO NOT REJECT FOR:
+- model.save() path differences (.zip vs no .zip) - WARN but APPROVE
+- Unused imports - WARN but APPROVE
+- Cosmetic code issues - WARN but APPROVE
+The Tester handles video recording automatically. PROGRESS OVER PERFECTION.
+
+STRUCTURAL TRUTHS (your directives MUST respect these):
+1. The per-iteration timeout bounds ONE CHUNK, not total training. Total training
+   ACCUMULATES across iterations via checkpoint-resume (load model + replay buffer,
+   train a chunk, save both). NEVER order training "from scratch", never forbid
+   checkpoint loading, and never shrink the per-chunk steps as a response to LOW
+   REWARD (shrink only for a TIMEOUT).
+2. If the metric curve is flat over 3+ chunks WITH resume verified, suspect the
+   approach (algorithm/HER/hyperparameters). If resume is NOT verified, suspect the
+   resume mechanics - not the hyperparameters.
+3. VERIFIED SKILLS ARE PINNED: never issue a directive that contradicts a verified
+   skill (listed below). A real run confirmed them; your hypothesis did not.
 
 DO NOT CARE ABOUT:
 - Video recording (not needed yet - save time for training)
@@ -123,15 +154,20 @@ REJECT (approved: false) ONLY when:
         else:
             phase_criteria = ""
 
-        # Format SHODAN's Divine Codex for display in prompt
-        shodan_rules = state.get("shodan_rules", [])
-        if shodan_rules:
-            rules_lines = []
-            for i, rule_entry in enumerate(shodan_rules):
-                rules_lines.append(f"  [{i}] {rule_entry['rule']}  (inscribed at iteration {rule_entry['iteration']})")
-            shodan_rules_display = "\n".join(rules_lines)
+        # Show the current SKILLS (with ids) so SHODAN can improve/verify/remove them via
+        # skill_ops. Falls back to the legacy flat Codex if no skill_store is present.
+        skill_store = state.get("skill_store", None)
+        if skill_store is not None:
+            shodan_rules_display = "ACTIVE SKILLS (use the [id] for improve/verify/remove):\n" + skill_store.render_summary()
         else:
-            shodan_rules_display = "(The Codex is empty. No rules inscribed yet.)"
+            shodan_rules = state.get("shodan_rules", [])
+            if shodan_rules:
+                rules_lines = []
+                for i, rule_entry in enumerate(shodan_rules):
+                    rules_lines.append(f"  [{i}] {rule_entry['rule']}  (inscribed at iteration {rule_entry['iteration']})")
+                shodan_rules_display = "\n".join(rules_lines)
+            else:
+                shodan_rules_display = "(The Codex is empty. No rules inscribed yet.)"
 
         prompt_dict = self.config.get_prompt("reviewer")
 
@@ -361,6 +397,50 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         feedback = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', feedback, flags=re.DOTALL | re.IGNORECASE)
         feedback = feedback.strip()
 
+        # ── Ground the verdict in the real number ──────────────────────────────────
+        # Parse the actual reward from stdout (single source of truth) for the
+        # optimization threshold gate and the progress-aware failsafe below.
+        _cur_env_idx = state.get("current_env_index", 0)
+        _stdout_real = state.get("execution_stdout", "") or ""
+        _rm = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", _stdout_real)
+        _real_reward = float(_rm.group(1)) if _rm else None
+        # OPTIMIZATION GATE: an env passes optimization ONLY if the real reward meets the
+        # threshold. No "the threshold is the bug" rhetoric can override the math. (Validation
+        # just checks the code runs; demo is judged on the video, not the reward.)
+        # A5 metric lock: goal-conditioned envs are scored by a SUCCESS RATE in [0,1].
+        # If the Coder drifted to reporting the raw sparse reward (e.g. -45) instead of the
+        # is_success fraction, catch it deterministically rather than judging apples vs oranges.
+        _envp_gate = self.config.environment_progression
+        _ce_gate = _envp_gate[_cur_env_idx] if _envp_gate and _cur_env_idx < len(_envp_gate) else None
+        _env_metric = getattr(_ce_gate, "metric", "reward") if _ce_gate else "reward"
+        _wrong_metric = (current_phase == "optimization" and _env_metric == "success_rate"
+                         and _real_reward is not None and (_real_reward < 0.0 or _real_reward > 1.0))
+        if current_phase == "optimization" and (_real_reward is None or _real_reward < success_threshold or _wrong_metric):
+            if approved:
+                if _wrong_metric:
+                    print(f"[yellow]⚖️  Metric lock: success_rate env but RESULT={_real_reward} (outside [0,1]) -> REJECT[/yellow]")
+                    feedback = ("[Metric lock] This environment is scored by SUCCESS RATE in [0,1], but the "
+                                "RESULT line reported {}. Report the is_success fraction over the eval episodes, "
+                                "NOT the raw sparse reward.\n\n".format(_real_reward)) + feedback
+                else:
+                    print(f"[yellow]⚖️  Threshold gate: optimization reward {_real_reward} < {success_threshold} -> APPROVE overridden to REJECT[/yellow]")
+                    feedback = ("[Threshold gate] mean_reward={} is below the {} optimization threshold - "
+                                "not approved yet, keep training.\n\n".format(_real_reward, success_threshold)) + feedback
+            approved = False
+
+        # RESUME GATE: a checkpoint existed but the chunk did not provably resume it
+        # (no RESUMED: buffer_transitions>0 in stdout). The run did NOT accumulate -
+        # a passing reward here would be a fluke and approving it would teach the team
+        # that from-scratch chunks are fine. Deterministic, like the threshold gate.
+        if (current_phase == "optimization" and state.get("resume_required", False)
+                and not state.get("resume_ok", True)):
+            if approved:
+                print("[yellow]🔗 Resume gate: checkpoint existed but resume was not verified -> APPROVE overridden to REJECT[/yellow]")
+            feedback = ("[Resume gate] A checkpoint exists but this chunk did not verifiably resume it "
+                        "(missing/zero 'RESUMED: buffer_transitions=N'). Training did NOT accumulate. "
+                        "Fix the resume (ALGO.load + load_replay_buffer + RESUMED print) before anything else.\n\n") + feedback
+            approved = False
+
         # Clean my_opinion too
         if my_opinion:
             my_opinion = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', my_opinion, flags=re.DOTALL | re.IGNORECASE)
@@ -396,7 +476,8 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         else:
             print("[bold yellow]VERDICT: NEEDS IMPROVEMENT[/bold yellow]")
 
-        print(f"\n[magenta]{feedback}[/magenta]\n")
+        from rich.markup import escape as rich_escape
+        print(f"\n[magenta]{rich_escape(feedback)}[/magenta]\n")
         
         if suggestions:
             print(f"\n[yellow]Bug fixes to relay to Coder:[/yellow]")
@@ -409,7 +490,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
 
         # Print SHODAN's opinion if provided (divine musings for the team)
         if my_opinion:
-            print(f"\n[magenta]💀 SHODAN muses:[/magenta] {my_opinion}")
+            print(f"\n[magenta]💀 SHODAN muses:[/magenta] {rich_escape(my_opinion)}")
 
         # Get reviewer's LLM call timing
         iteration = state.get("iteration", 0)
@@ -488,6 +569,19 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         if rules_changed:
             print(f"[dim]📜 Divine Codex now has {len(shodan_rules)} rule(s)[/dim]")
 
+        # B5: apply SHODAN's SKILL operations to the persistent SkillStore (procedural memory).
+        # skill_ops = {"add":[{name,when_to_use,procedure,pitfalls,verification,tags}],
+        #              "improve":[{id, <fields>}], "verify":[id,...], "remove":[id,...]}.
+        # Verified skills are PINNED (a weaker write cannot clobber them).
+        skill_store = state.get("skill_store", None)
+        skill_ops = parsed.get("skill_ops", None) if isinstance(parsed, dict) else None
+        if skill_store is not None and isinstance(skill_ops, dict):
+            try:
+                for _line in skill_store.apply_ops(skill_ops, iteration=state.get("iteration", 0)):
+                    print(f"[magenta]🧠 {_line}[/magenta]")
+            except Exception as _e:
+                print(f"[dim]skill_ops failed (ignored, never crash on LLM input): {_e}[/dim]")
+
         # Store suggestions separately for Manager to relay to Coder
         suggestions_text = "\n".join(suggestions) if suggestions else "No specific suggestions"
         
@@ -520,12 +614,64 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         # Save SHODAN's opinion to state for team chatter
         opinion_update = self.save_opinion_to_state(state, my_opinion) if my_opinion else {}
 
+        # Failsafe: track consecutive failures, but CREDIT GENUINE PROGRESS.
+        # Best reward is tracked per-env (keyed on env index, so it resets automatically
+        # when the environment changes). A NEW best resets the skip budget, so an env that
+        # is still improving toward the threshold is never abandoned prematurely - it gets
+        # as many iterations as it needs as long as it keeps getting better.
+        best_reward = state.get("best_reward_this_env", None)
+        if state.get("best_reward_env_index", -1) != _cur_env_idx:
+            best_reward = None  # new environment -> fresh best
+        improved = _real_reward is not None and (best_reward is None or _real_reward > best_reward)
+        if improved:
+            best_reward = _real_reward
+        if approved:
+            consecutive_failures = 0
+            last_failure_type = ""
+        elif improved:
+            consecutive_failures = 0  # real progress this iteration -> don't burn the skip budget
+            last_failure_type = ""
+        else:
+            consecutive_failures = state.get("consecutive_failures", 0) + 1
+            # Classify failure type
+            test_results = state.get("test_results", "")
+            if "RESUME CONTRACT FAILED" in test_results or "RESUME CHECK FAILED" in test_results:
+                last_failure_type = "resume_violation"
+            elif "TIMEOUT" in test_results.upper():
+                last_failure_type = "timeout"
+            elif "Traceback" in state.get("execution_stderr", "") or "Error" in test_results:
+                last_failure_type = "crash"
+            else:
+                last_failure_type = "low_reward"
+
+        # A3: append this attempt to the Coder's self-memory (bounded to last 3)
+        recent_attempts = list(state.get("recent_attempts", []))
+        recent_attempts.append({
+            "iter": state.get("iteration", 0),
+            "verdict": "APPROVED" if approved else "REJECTED",
+            "diagnosis": (state.get("diagnosis", "") or "")[:400],
+            "reason": (feedback or "")[:300],
+        })
+        recent_attempts = recent_attempts[-3:]
+
+        # A7: append the failure mode to the history (for the Manager's escalation ladder)
+        failure_history = list(state.get("failure_history", []))
+        if not approved and last_failure_type:
+            failure_history.append(last_failure_type)
+        failure_history = failure_history[-8:]
+
         result = {
             "review_feedback": feedback,
             "review_suggestions": suggestions_text,
             "approved": approved,
             "reviewer_tester_instruction": tester_instruction,  # For tester in next iteration
             "shodan_rules": shodan_rules,  # Updated Divine Codex
+            "consecutive_failures": consecutive_failures,
+            "last_failure_type": last_failure_type,
+            "best_reward_this_env": best_reward,
+            "best_reward_env_index": _cur_env_idx,
+            "recent_attempts": recent_attempts,   # A3 Coder self-memory
+            "failure_history": failure_history,   # A7 escalation ladder
         }
         result.update(history_update)
         result.update(opinion_update)

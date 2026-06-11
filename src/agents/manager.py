@@ -1,4 +1,5 @@
 import json
+import os
 from .base import BaseAgent
 from rich import print
 from src.utils.banners import print_environment_switch_bombardment, print_manager_report, print_iteration_banner, print_reviewer_cynical_report
@@ -6,7 +7,126 @@ from src.utils.banners import print_environment_switch_bombardment, print_manage
 class Manager(BaseAgent):
     def __init__(self, config, model_switcher=None):
         super().__init__(config, "manager", model_switcher=model_switcher)
-    
+
+    @staticmethod
+    def _extract_recipe_from_code(code: str, env_name: str, iterations: int) -> dict:
+        """Extract algorithm, timesteps, device from successful code."""
+        import re
+        recipe = {"env": env_name, "iterations": iterations}
+
+        # Algorithm
+        algo_match = re.search(r'\b(PPO|SAC|A2C|DQN|TD3)\b', code)
+        recipe["algo"] = algo_match.group(1) if algo_match else "unknown"
+
+        # Timesteps
+        steps_match = re.search(r'total_timesteps\s*=\s*(\d+)', code)
+        recipe["steps"] = int(steps_match.group(1)) if steps_match else 0
+
+        # Device
+        device_match = re.search(r'device\s*=\s*["\'](\w+)["\']', code)
+        recipe["device"] = device_match.group(1) if device_match else "unknown"
+
+        return recipe
+
+    @staticmethod
+    def _skill_from_winning_code(code: str, env_name: str) -> dict:
+        """B6: build a PROCEDURAL skill from winning code (far richer than the regex
+        playbook). Captures algorithm + policy class + HER + the metric/checkpoint
+        approach, so the NEXT env's Coder inherits the full recipe, not just 'SAC'."""
+        import re
+        algo_m = re.search(r'\b(PPO|SAC|A2C|DQN|TD3|DDPG)\b', code)
+        algo = algo_m.group(1) if algo_m else "the same algorithm"
+        policy = ("MultiInputPolicy" if "MultiInputPolicy" in code
+                  else ("CnnPolicy" if "CnnPolicy" in code else "MlpPolicy"))
+        uses_her = "HerReplayBuffer" in code
+        is_goal = uses_her or "MultiInputPolicy" in code or "desired_goal" in code
+        lname = env_name.lower()
+        family = "panda / robotic manipulation" if ("panda" in lname or "fetch" in lname) else env_name
+        proc = [f"Use {algo} with policy='{policy}'"]
+        if uses_her:
+            proc.append("replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal':4,'goal_selection_strategy':'future'}")
+        proc.append("read max_episode_steps from env.spec and set learning_starts >= that value")
+        proc.append("each optimization iteration resume from the checkpoint (SAC.load + load_replay_buffer, learn one ~150k chunk, then save model + replay buffer)")
+        if is_goal:
+            proc.append("report success_rate (the is_success fraction), never the raw sparse reward")
+        return {
+            "name": f"Solve {family}",
+            "when_to_use": (f"A goal-conditioned / sparse-reward env like {env_name} (Dict obs with desired_goal)."
+                            if is_goal else f"An env like {env_name}."),
+            "procedure": "; ".join(proc) + ".",
+            "pitfalls": ("Plain MlpPolicy or no-HER cannot solve goal envs; never pass reset_num_timesteps=False "
+                         "(breaks termination on a reloaded model); 30k steps is starvation - use ~150k chunks and accumulate."
+                         if is_goal else "Commit to one algorithm so checkpoint-resume accumulates."),
+            "verification": ("RESULT line prints success_rate in [0,1] >= the env threshold."
+                             if is_goal else "RESULT mean_reward >= the env threshold."),
+            "source_env": env_name,
+            "tags": (["goal", "her", "manipulation", "robotics", "success_rate"] if is_goal else ["general"]),
+            "status": "verified",
+            "confidence": 0.9,
+        }
+
+    @staticmethod
+    def _initial_validation_task(next_env) -> str:
+        """Concrete first VALIDATION task for a newly entered environment.
+
+        Returned on every env-switch path so the Coder NEVER starts a new env with an
+        empty/stale task (the stale-task race: after a switch the Coder coded the NEW
+        env while manager_guidance still described the OLD env's task -> the Reviewer
+        rejected correct work as 'mismatching intent', one wasted iteration per switch)."""
+        action_type = getattr(next_env, "action_type", "")
+        algo = "SAC" if action_type == "continuous" else "PPO"
+        is_goal = getattr(next_env, "metric", "reward") == "success_rate"
+        metric_note = (" The env is goal-conditioned: report success_rate (the is_success "
+                       "fraction over eval episodes) in the mean_reward slot." if is_goal else "")
+        return (f"Write a minimal VALIDATION script for {next_env.name}: create the env with "
+                f"gym.make('{next_env.name}'), train a fresh {algo} model briefly "
+                f"(1000-2000 timesteps, n_envs=1, default hyperparameters), evaluate, and print "
+                f"exactly 'RESULT: mean_reward=X, std_reward=Y, episodes=Z'.{metric_note} "
+                f"Save the model at the end. Keep the script minimal so it finishes well "
+                f"within the validation timeout.")
+
+    @staticmethod
+    def _env_switch_reset(next_env_index: int, task: str, video_dir: str) -> dict:
+        """Shared state-reset block for ALL env-switch paths (solved / failsafe / LLM
+        switch). One source of truth so no path forgets a field (the C1/C2 fields
+        especially: stale metric_history would poison the next env's curve)."""
+        return {
+            "current_env_index": next_env_index,
+            "current_phase": "validation",
+            "consecutive_failures": 0,
+            "last_failure_type": "",
+            "failure_history": [],
+            "recent_attempts": [],
+            "diagnosis": "",
+            "best_model_path": "",
+            "approved": False,
+            "tasks": [task],
+            "code": "",
+            "test_results": "",
+            "review_feedback": "",
+            "review_suggestions": "",
+            "current_task": task,
+            "manager_guidance": f"Task: {task}",  # keep Reviewer's expectation in sync with the NEW env
+            "video_dir": video_dir,
+            "iteration": 1,
+            # C1/C2: fresh cumulative tracking + resume flags for the new env
+            "total_env_steps": 0,
+            "metric_history": [],
+            "measured_sps": None,
+            "resume_required": False,
+            "resume_ok": True,
+        }
+
+    @staticmethod
+    def _format_playbook_context(playbook: list) -> str:
+        """Format playbook as human-readable context for Manager prompt."""
+        if not playbook:
+            return ""
+        lines = ["\nLESSONS FROM PREVIOUS ENVIRONMENTS (use similar approaches for similar envs):"]
+        for entry in playbook:
+            lines.append(f"  - {entry['env']}: {entry.get('algo','?')}, {entry.get('steps','?')} steps, device={entry.get('device','?')}, solved in {entry.get('iterations','?')} iterations")
+        return "\n".join(lines) + "\n"
+
     def _generate_environment_switch_report(self, current_env, next_env, solved_environments, env_progression, state):
         """Generate a report to leadership about environment switch"""
         # Calculate stats
@@ -154,7 +274,45 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         # Check if we need to advance to next environment
         current_env_index = state.get("current_env_index", 0)
         solved_environments = state.get("solved_environments", [])
+        skipped_environments = state.get("skipped_environments", [])
         env_progression = self.config.environment_progression
+
+        # FAILSAFE: Skip to next environment after too many consecutive failures
+        consecutive_failures = state.get("consecutive_failures", 0)
+        failsafe_config = getattr(self.config.project, 'failsafe', None)
+        skip_threshold = getattr(failsafe_config, 'skip_after_consecutive_failures', 8) if failsafe_config else 8
+
+        if consecutive_failures >= skip_threshold and env_progression and current_env_index + 1 < len(env_progression):
+            current_env_name_fs = env_progression[current_env_index].name if current_env_index < len(env_progression) else "unknown"
+            next_env = env_progression[current_env_index + 1]
+            print(f"\n[bold red]{'='*60}[/bold red]")
+            print(f"[bold red]⚠️  FAILSAFE: {consecutive_failures} consecutive failures on {current_env_name_fs}[/bold red]")
+            print(f"[bold yellow]➡️  Skipping to next environment: {next_env.name}[/bold yellow]")
+            print(f"[bold red]{'='*60}[/bold red]\n")
+
+            logger = state.get("conversation_logger")
+            if logger:
+                logger.log_agent_chat("manager", state.get("iteration", 0),
+                    f"FAILSAFE: Skipping {current_env_name_fs} after {consecutive_failures} consecutive failures. Moving to {next_env.name}.")
+
+            new_video_dir = os.path.abspath(os.path.normpath(f"output/{state['run_id']}/{next_env.name}/videos"))
+            os.makedirs(new_video_dir, exist_ok=True)
+
+            # 1.4: advance the config env (like the solved / LLM-switch paths) so the Coder prompt,
+            # the lint env-name check, and the Tester all agree on the NEW env - not a stale one.
+            self.config.project.environment.name = next_env.name
+            self.config.project.environment.max_episode_steps = next_env.max_episode_steps
+            # 1.4: give the Coder a real validation task instead of "" (the graph runs Coder
+            # immediately after this return; an empty task is a guaranteed wasted iteration).
+            _skip_task = self._initial_validation_task(next_env)
+
+            _reset = self._env_switch_reset(current_env_index + 1, _skip_task, new_video_dir)
+            _reset.update({
+                "skipped_environments": skipped_environments + [current_env_name_fs],
+                "best_reward_this_env": None,
+                "review_feedback": f"FAILSAFE: Skipped {current_env_name_fs} after {consecutive_failures} failures.",
+            })
+            return _reset
 
         # MONIVAIHEINEN TREENI: Tarkista ja vaihda vaihe kun approved=True
         current_phase = state.get("current_phase", "validation")
@@ -352,26 +510,43 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                         return {"current_task": f"ERROR: Config update failed: {e}"}
 
                     # Build new video_dir for next environment
-                    import os
                     run_id = state.get("run_id", "")
                     new_video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{next_env.name}/videos"))
                     os.makedirs(new_video_dir, exist_ok=True)
 
-                    # Reset state for new environment (preserve env_switch_reports for history!)
-                    return {
-                        "current_env_index": next_env_index,
+                    # Save recipe to Playbook before switching
+                    playbook = list(state.get("playbook", []))
+                    winning_code = state.get("code", "")
+                    iterations_used = state.get("iteration", 0)
+                    if winning_code:
+                        recipe = self._extract_recipe_from_code(winning_code, current_env.name, iterations_used)
+                        playbook.append(recipe)
+                        print(f"[bold cyan]📖 Playbook: {current_env.name} → {recipe.get('algo','?')}, {recipe.get('steps','?')} steps, {recipe.get('device','?')}[/bold cyan]")
+                        # B6: distil a PROCEDURAL verified SKILL so the next env's Coder inherits
+                        # the full recipe (algo + policy + HER + checkpoint), not just regex values.
+                        _ss = state.get("skill_store", None)
+                        if _ss is not None:
+                            try:
+                                _sk = self._skill_from_winning_code(winning_code, current_env.name)
+                                _sid = _ss.add(created_iter=iterations_used, **_sk)
+                                _ss.save()
+                                print(f"[bold magenta]🧠 SKILL learned (verified): [{_sid}] {_sk['name']}[/bold magenta]")
+                            except Exception as _e:
+                                print(f"[dim]skill distil failed: {_e}[/dim]")
+
+                    # Reset state for new environment (preserve env_switch_reports + playbook
+                    # for history!). The reset includes a CONCRETE validation task + matching
+                    # manager_guidance - an empty task here caused the stale-task race (the
+                    # Coder improvised for the NEW env while the Reviewer still judged against
+                    # the OLD env's task; one wasted iteration + wrong blame at every switch).
+                    _next_task = self._initial_validation_task(next_env)
+                    _reset = self._env_switch_reset(next_env_index, _next_task, new_video_dir)
+                    _reset.update({
                         "solved_environments": solved_environments,
                         "env_switch_reports": env_switch_reports,  # Preserve kierrosraportit history!
-                        "approved": False,  # Reset approval for new environment
-                        "tasks": [],  # Start fresh tasks for new environment
-                        "code": "",  # Reset code
-                        "test_results": "",
-                        "review_feedback": "",
-                        "review_suggestions": "",
-                        "current_task": "",
-                        "video_dir": new_video_dir,  # Env-specific video directory
-                        "iteration": 1,  # LangGraph adds this automatically due to operator.add
-                    }
+                        "playbook": playbook,  # Preserve learned recipes!
+                    })
+                    return _reset
                 else:
                     print(f"[bold green]🏆 ALL ENVIRONMENTS SOLVED! Mission complete![/bold green]\n")
                     return {
@@ -395,7 +570,21 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         current_env = env_progression[current_env_index] if env_progression else None
         current_env_name = current_env.name if current_env else self.config.environment.name
         current_success_threshold = current_env.success_threshold if current_env else (env_progression[0].success_threshold if env_progression else 0)
-        
+
+        # A5 fix: make the optimization GOAL metric-aware. Goal-conditioned envs are scored by
+        # success_rate, NOT raw mean_reward - the Manager must instruct that, or the Coder reports
+        # the meaningless raw sparse reward (~-1) and nothing ever crosses the threshold.
+        _env_metric = getattr(current_env, "metric", "reward") if current_env else "reward"
+        _metric_name = "success_rate" if _env_metric == "success_rate" else "mean_reward"
+        _metric_note = ""
+        if _env_metric == "success_rate":
+            _metric_note = (
+                "\n\nMETRIC = SUCCESS RATE (goal-conditioned / sparse-reward env): the score is the fraction"
+                "\nof eval episodes with info['is_success'], in [0,1]. Tell the Coder to COMPUTE and REPORT"
+                "\nsuccess_rate in the RESULT line - NOT evaluate_policy raw reward (which is ~-1 and"
+                "\nmeaningless here). The success-rate eval loop OVERRIDES any 'evaluate_policy' wording."
+            )
+
         # Build environment progression info showing all environments
         if env_progression:
             env_list = []
@@ -430,14 +619,15 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
 GOAL: Verify code WORKS - get ANY reward signal (threshold doesn't matter yet!)
 
 ⚠️  TIMEOUT: {val_timeout} SECONDS! Code MUST complete within {val_timeout}s!
-    - Use total_timesteps=5000 (NOT more!)
+    - Use total_timesteps=1000-2000 (NOT more! Off-policy SAC does a gradient
+      update per step and framework/env startup eats ~10-40s of the budget -
+      5000 SAC steps does NOT fit a validation window)
     - Use n_envs=1 (NOT parallel envs!)
-    - Anything over 10k timesteps WILL timeout and waste an iteration!
 
 SUCCESS: Code runs without errors AND prints RESULT: mean_reward=X
 
 DO:
-- total_timesteps=5000, n_envs=1
+- total_timesteps=1000-2000, n_envs=1
 - Simple hyperparameters (defaults are fine)
 - Code MUST print "RESULT: mean_reward=X, std_reward=Y, episodes=Z"
 
@@ -449,24 +639,67 @@ DON'T:
 ===============================================================================
 """
         elif current_phase == "optimization":
+            # C1: cumulative status + SPS-derived chunk size -> no more step-count roulette
+            _opt_timeout = current_env.execution_timeout if current_env else 900
+            _tot_steps = state.get("total_env_steps", 0) or 0
+            _mh = state.get("metric_history", []) or []
+            _mh_str = ", ".join(f"{v:g}" for v in _mh[-10:]) if _mh else "(no completed chunks yet)"
+            _sps = state.get("measured_sps", None)
+            _has_ckpt = bool(state.get("best_model_path", ""))
+            if _sps:
+                _chunk = int(_sps * _opt_timeout * 0.8)
+                _chunk = max(20000, min(500000, int(round(_chunk / 10000.0) * 10000)))
+                _chunk_note = (f"Measured training speed ~{_sps} steps/s -> a chunk of ~{_chunk:,} steps "
+                               f"fits the {_opt_timeout}s timeout with margin. USE THAT CHUNK SIZE - "
+                               f"do not guess step counts.")
+            else:
+                _chunk_note = ("No measured speed yet - start with a moderate chunk (~50,000 steps); "
+                               "the Tester measures steps/s from it and the next chunk is sized from that.")
+            if _has_ckpt:
+                _resume_block = """A CHECKPOINT EXISTS (/workspace/output/best_model). The task MUST include these steps
+(the Tester REJECTS - before Docker - any optimization script that skips them):
+  1. model = ALGO.load('/workspace/output/best_model', env=env)
+  2. buf = '/workspace/output/best_model_buffer'
+     if os.path.exists(buf + '.pkl'): model.load_replay_buffer(buf)
+  3. print(f"RESUMED: buffer_transitions={model.replay_buffer.size()}")
+  4. model.learn(total_timesteps=CHUNK)   # default reset_num_timesteps - NEVER pass False
+  5. model.save('/workspace/output/best_model'); model.save_replay_buffer(buf)
+NEVER instruct training from scratch and NEVER forbid checkpoint loading - progress
+accumulates ONLY through this resume chain."""
+            else:
+                _resume_block = """No checkpoint yet (first optimization chunk): train a fresh model, print
+"RESUMED: buffer_transitions=0", and at the end SAVE BOTH model.save('/workspace/output/best_model')
+AND model.save_replay_buffer('/workspace/output/best_model_buffer') so the next chunk can resume."""
             phase_instruction = f"""
 ===============================================================================
-🚀 PHASE: OPTIMIZATION (Full training toward threshold)
+🚀 PHASE: OPTIMIZATION (Full training toward threshold - ACCUMULATES across iterations)
 ===============================================================================
-GOAL: Achieve mean_reward >= {current_success_threshold}
-TIME: FULL timeout available - use it wisely
-SUCCESS: mean_reward >= {current_success_threshold}
+GOAL: Achieve {_metric_name} >= {current_success_threshold}
+TIME: one chunk per iteration, {_opt_timeout}s wall clock; TOTAL training accumulates
+across iterations via checkpoint-resume.
+SUCCESS: {_metric_name} >= {current_success_threshold}{_metric_note}
+
+CUMULATIVE STATUS (this env): {_tot_steps:,} steps trained so far.
+Metric per chunk: {_mh_str}
+{_chunk_note}
+
+CHECKPOINT-RESUME (the core mechanism):
+{_resume_block}
+
+EVALUATION (after the chunk):
+- >= 20 eval episodes, fixed seeds (env.reset(seed=1000+i)) - a 10-episode eval is
+  mostly noise and causes false conclusions about what helped.
+- Code MUST print "RESULT: mean_reward=X, std_reward=Y, episodes=Z" (put the {_metric_name} value in the mean_reward slot)
 
 DO:
-- Tune hyperparameters aggressively
-- Increase timesteps if needed
-- Try different algorithms if stuck
-- Code MUST print "RESULT: mean_reward=X, std_reward=Y, episodes=Z"
+- Keep the ALGORITHM STABLE within this env (switching discards accumulated weights)
+- If the metric curve is flat over 3+ RESUMED chunks, change the approach class
+  (hyperparameters/HER), not the chunk size
 - NO video recording yet - focus on training!
 
 DON'T:
+- Reduce the chunk size because reward is low (shrink only after a TIMEOUT)
 - Give up too early
-- Waste time on video setup
 - Use tensorboard_log (NOT INSTALLED!)
 - Use EvalCallback or Monitor wrapper
 ===============================================================================
@@ -507,26 +740,88 @@ CRITICAL API RULES:
         else:
             phase_instruction = ""
 
-        task_template = prompt_dict["task_template"].format(
-            tasks=state.get("tasks", []),
-            code_summary=code_summary,
-            test_results=state.get("test_results", ""),
-            review_feedback=review_feedback,
-            review_suggestions=review_suggestions,
-            iteration=expected_iteration,
-            max_iterations=self.config.agents.max_iterations,
-            environment=current_env_name,
-            success_threshold=current_success_threshold,
-            video_dir=state.get("video_dir", self.config.video.output_dir),
-            env_progression_info=env_progression_info,
-            solved_envs=", ".join(solved_environments) if solved_environments else "None",
-            agent_opinions_context=agent_opinions_context,
-            # Environment specs for Coder
-            obs_dim=obs_dim,
-            action_type=action_type,
-            action_dim=action_dim,
-            device=device,
-        )
+        # Format playbook context from learned recipes
+        playbook_context = self._format_playbook_context(state.get("playbook", []))
+
+        # A7: escalation ladder - if the SAME failure mode repeats 3x, instruct the Manager
+        # to change the STRATEGY CLASS, not the parameter. Appended to phase_instruction so
+        # no prompt-template placeholder change is needed.
+        _fh = state.get("failure_history", []) or []
+        if len(_fh) >= 3 and len(set(_fh[-3:])) == 1:
+            _mode = _fh[-1]
+            phase_instruction += (
+                f"\n\n⚠️ ESCALATION: the last 3 failures were ALL '{_mode}'. Tweaking the same "
+                f"parameter will not help - CHANGE THE STRATEGY CLASS. Repeated 'timeout' on a single "
+                f"long run -> use checkpoint-resume in ~150k chunks (NOT a smaller step count, which "
+                f"starves training). Repeated 'crash' -> change the approach/API, not the value. "
+                f"Repeated 'low_reward' -> change algorithm or add HER for goal-conditioned envs. "
+                f"Repeated 'resume_violation' -> the script keeps skipping the checkpoint-resume steps; "
+                f"spell out the EXACT load/print/save lines verbatim in the task."
+            )
+
+        # C3: VERIFIED SKILLS TAKE PRECEDENCE. Skills confirmed by real runs outrank ANY
+        # other feedback - including the Reviewer's directives. (PandaPush 2026-06-10: the
+        # seeded verified skill prescribed checkpoint-resume, the Reviewer ordered 'train
+        # from scratch, no load logic', the team obeyed the Reviewer and plateaued for 20
+        # iterations. The skill was right; structure must say which voice wins.)
+        if current_phase in ("validation", "optimization"):
+            _ss = state.get("skill_store", None)
+            if _ss is not None:
+                try:
+                    _sk_txt = _ss.render_for_coder(env_name=current_env_name)
+                except Exception:
+                    _sk_txt = ""
+                if _sk_txt:
+                    phase_instruction += (
+                        "\n\n⛏️ VERIFIED SKILLS TAKE PRECEDENCE: the skills below were confirmed by "
+                        "real runs. If ANY feedback - including the Reviewer's - contradicts a "
+                        "verified skill, FOLLOW THE SKILL and note the conflict in your reasoning. "
+                        "Build the task so it implements the skill's procedure.\n" + _sk_txt
+                    )
+
+        try:
+            task_template = prompt_dict["task_template"].format(
+                tasks=state.get("tasks", []),
+                code_summary=code_summary,
+                test_results=state.get("test_results", ""),
+                review_feedback=review_feedback,
+                review_suggestions=review_suggestions,
+                iteration=expected_iteration,
+                max_iterations=self.config.agents.max_iterations,
+                environment=current_env_name,
+                success_threshold=current_success_threshold,
+                video_dir=state.get("video_dir", self.config.video.output_dir),
+                env_progression_info=env_progression_info,
+                solved_envs=", ".join(solved_environments) if solved_environments else "None",
+                agent_opinions_context=agent_opinions_context,
+                playbook_context=playbook_context,
+                # Environment specs for Coder
+                obs_dim=obs_dim,
+                action_type=action_type,
+                action_dim=action_dim,
+                device=device,
+            )
+        except KeyError:
+            # Fallback if template doesn't have {playbook_context}
+            task_template = prompt_dict["task_template"].format(
+                tasks=state.get("tasks", []),
+                code_summary=code_summary,
+                test_results=state.get("test_results", ""),
+                review_feedback=review_feedback,
+                review_suggestions=review_suggestions,
+                iteration=expected_iteration,
+                max_iterations=self.config.agents.max_iterations,
+                environment=current_env_name,
+                success_threshold=current_success_threshold,
+                video_dir=state.get("video_dir", self.config.video.output_dir),
+                env_progression_info=env_progression_info,
+                solved_envs=", ".join(solved_environments) if solved_environments else "None",
+                agent_opinions_context=agent_opinions_context,
+                obs_dim=obs_dim,
+                action_type=action_type,
+                action_dim=action_dim,
+                device=device,
+            )
         system_prompt = prompt_dict["system"].format(
             environment=current_env_name,
             success_threshold=current_success_threshold
@@ -860,25 +1155,16 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
                     return {"current_task": f"ERROR: Config update failed: {e}"}
                 
                 # Build new video_dir for next environment
-                import os
                 run_id = state.get("run_id", "")
                 new_video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{next_env.name}/videos"))
                 os.makedirs(new_video_dir, exist_ok=True)
 
-                # Reset state for new environment (don't save reviewer's switch report - it's already printed)
-                return {
-                    "current_env_index": next_env_index,
-                    "solved_environments": solved_environments,
-                    "approved": False,  # Reset approval for new environment
-                    "tasks": [],  # Start fresh tasks for new environment
-                    "code": "",  # Reset code
-                    "test_results": "",
-                    "review_feedback": "",
-                    "review_suggestions": "",
-                    "current_task": "",
-                    "video_dir": new_video_dir,  # Env-specific video directory
-                    "iteration": 1,  # LangGraph adds this automatically due to operator.add
-                }
+                # Reset state for new environment (don't save reviewer's switch report - it's
+                # already printed). Concrete task + guidance: see _env_switch_reset docstring.
+                _next_task = self._initial_validation_task(next_env)
+                _reset = self._env_switch_reset(next_env_index, _next_task, new_video_dir)
+                _reset.update({"solved_environments": solved_environments})
+                return _reset
             else:
                 print(f"\n[bold yellow]⚠️  Manager requested environment switch, but all environments completed![/bold yellow]\n")
         

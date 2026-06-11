@@ -1,0 +1,20 @@
+{
+  "skills": [
+    {
+      "id": "solve-panda-robotic-manipulation",
+      "name": "Solve panda / robotic manipulation",
+      "when_to_use": "An env like PandaReach-v3.",
+      "procedure": "Use SAC with policy='MlpPolicy'; read max_episode_steps from env.spec and set learning_starts >= that value; each optimization iteration resume from the checkpoint (SAC.load + load_replay_buffer, learn one ~150k chunk, then save model + replay buffer).",
+      "pitfalls": "Commit to one algorithm so checkpoint-resume accumulates.",
+      "verification": "RESULT mean_reward >= the env threshold.",
+      "status": "verified",
+      "confidence": 0.9,
+      "source_env": "PandaReach-v3",
+      "created_iter": 8,
+      "last_validated_iter": -1,
+      "tags": [
+        "general"
+      ]
+    }
+  ]
+}

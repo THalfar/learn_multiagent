@@ -32,7 +32,13 @@ if __name__ == "__main__":
     first_env_name = env_progression[0].name
     video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{first_env_name}/videos"))
     os.makedirs(video_dir, exist_ok=True)
-    
+
+    # PHASE B: procedural skill memory (persistent across runs; replaces the flat Codex).
+    from src.skills import SkillStore
+    skill_store = SkillStore(skills_dir=config.skills_dir).load()
+    skill_store.seed_if_empty(initial_skills=config.initial_skills, initial_rules=config.initial_codex_rules)
+    skill_store.save()
+
     initial_state = {
         "run_id": run_id,
         "video_dir": video_dir,
@@ -55,8 +61,29 @@ if __name__ == "__main__":
         # Monivaiheinen treeni: validation -> optimization -> demo
         "current_phase": "validation",  # Aloitetaan aina validoinnilla
         "best_model_path": "",  # Polku parhaaseen malliin (täytetään optimization-vaiheessa)
-        # SHODAN's Divine Codex - persistent rules for coder's prompt
-        "shodan_rules": [],  # Starts empty, SHODAN adds rules during review
+        # SHODAN's Divine Codex - persistent rules for coder's prompt.
+        # Pre-seeded from config (empty by default; the seeded experiment injects an HER hint).
+        "shodan_rules": [{"rule": r, "iteration": 0} for r in config.initial_codex_rules],
+        # Failsafe: skip env after repeated failures
+        "consecutive_failures": 0,
+        "last_failure_type": "",
+        # Honest scoreboard + progress-aware failsafe
+        "skipped_environments": [],
+        "best_reward_this_env": None,
+        "best_reward_env_index": -1,
+        # Manager's Playbook: learned recipes from solved environments
+        "playbook": [],
+        # A3 Coder self-memory / A6 diagnosis / A7 escalation / Phase B skill store
+        "recent_attempts": [],
+        "diagnosis": "",
+        "failure_history": [],
+        "skill_store": skill_store,
+        # C1 cumulative learning visibility / C2 checkpoint-resume enforcement
+        "total_env_steps": 0,
+        "metric_history": [],
+        "measured_sps": None,
+        "resume_required": False,
+        "resume_ok": True,
     }
     
     # Print run start banner
@@ -78,14 +105,17 @@ if __name__ == "__main__":
     iterations = result.get("iteration", 0)
     success = result.get("approved", False)
     solved_environments = result.get("solved_environments", [])
-    print_final_summary(run_id, iterations, success, total_time, solved_environments)
+    skipped_environments = result.get("skipped_environments", [])
+    print_final_summary(run_id, iterations, success, total_time, solved_environments, skipped_environments)
     print(f"[bold green]📊 Statistics saved to output/{run_id}/statistics.json[/bold green]")
-    
+
     # Save final conversation log summary
     conversation_logger.log_final_summary(
         total_iterations=iterations,
         success=success,
         total_time=total_time,
-        solved_environments=solved_environments
+        solved_environments=solved_environments,
+        skipped_environments=skipped_environments,
+        cost=stats.get_cost(),
     )
     print(f"[bold green]💬 Conversation log saved to {conversation_logger.get_log_path()}[/bold green]")
