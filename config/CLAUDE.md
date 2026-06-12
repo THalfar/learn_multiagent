@@ -9,6 +9,7 @@ All YAML configuration lives here. Two separate concerns: **project settings** a
 Pydantic-validated via `src/config_loader.py` (`ProjectConfig` model).
 
 Key sections:
+- `pipeline: quad|duo` — topology (default `quad`). `quad` = Manager→Coder→Tester→Reviewer; `duo` = Director→Coder→Executor (1 LLM role). `main.py` dispatches on it.
 - `environment` / `environment_progression` — Gymnasium env specs, thresholds, timeouts, device (cpu/gpu)
   - `metric: reward|success_rate` — goal-conditioned envs are scored by the `is_success` fraction in [0,1]
   - `tags: [..]` — optional env-family tags (e.g. `['goal','her','manipulation']`) for SKILL retrieval; declaring them avoids the Coder/Manager hard-coding `panda`/`fetch` substring checks (which remain a fallback)
@@ -22,6 +23,8 @@ Key sections:
 - `demo.yaml` — short, predictable presentation run (2 fast envs, adaptive switching off, cloud SHODAN)
 - `demo_local.yaml` — same, but reviewer is a local Ollama tag (fully local, no cloud)
 - `test_single.yaml` — smoke test: one already-installed model for all local agents
+- `duo_robot_seeded.yaml` — **duo pipeline** night run (panda progression + HER seed; `pipeline: duo`, `prompts_file: duo_prompts.yaml`, `skills_dir: skills/duo_seeded`)
+- `duo_smoke.yaml` — duo 2-iteration wiring sanity (`max_iterations: 2`, `skills_dir: skills/duo_smoke`)
 - All are full configs (Pydantic `extra='forbid'`); `main.py config/<name>.yaml` selects one, and each names its own `prompts_file`.
 - `gpu` — VRAM limits for RL training in Docker
 - `training_phases` — Multi-phase: validation -> optimization -> demo.
@@ -47,6 +50,11 @@ Special placeholders in coder's prompt:
 
 ### prompts.yaml — Original detailed prompts
 Larger, more constrained prompts. Same structure as opus_prompts.yaml but without `{shodan_rules}` placeholders — `BaseAgent.render_template()` renders an absent optional placeholder as empty, so no per-call try/except KeyError fallback is needed.
+
+### duo_prompts.yaml — Duo pipeline prompts
+Only two sections (the duo pipeline has no Manager/Tester nodes):
+- `reviewer:` — the **Director** (SHODAN). "There is no Manager and no Tester. YOU are strategist, judge, and taskmaster." Carries the four-gate awareness, the resume contract, success_rate semantics, the skill_ops contract + THE PIN BINDS YOU TOO, and a JSON `task_template` contract of `{{approved, feedback, next_task, skill_ops, my_opinion}}` (no `tester_instruction`). Rendered via `render_template` (format_map), so literal braces are doubled. Inherits `environment_switch_report_template`.
+- `coder:` — the opus coder + a "RAW EXECUTION OUTPUT" paragraph (fix what the container actually printed) + a short `chat_template` (team chatter). Its `system` is concatenated raw (braces single); its `task_template` is formatted (braces doubled).
 
 ## Conventions
 - YAML uses `{{` for literal braces (Python `.format()` escaping)

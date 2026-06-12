@@ -36,17 +36,21 @@ A **Manager** assigns tasks, a **Coder** writes training scripts, a **Tester** e
                    +--+      next phase / next env
 ```
 
+**Two pipeline topologies** (pick with `pipeline: quad|duo` in the config):
+- **quad** (above, default) — `Manager → Coder → Tester → Reviewer`: four LLM roles, the Tester paraphrases the run for the Reviewer.
+- **duo** — `Director → Coder → Executor`: collapses the Manager+Reviewer into ONE frontier call (the **Director** judges the last run *and* writes the next task) and replaces the Tester LLM with a deterministic **Executor**, so the Coder reads the container's **raw stdout/stderr** directly — no "broken telephone". Run it with `config/duo_robot_seeded.yaml`. Both pipelines share the same gates, skills, checkpoint-resume and demo machinery.
+
 Each environment goes through three phases:
 
 | Phase | Goal | Timeout |
 |-------|------|---------|
 | **Validation** | Does the code run without errors? | ~2% of base timeout |
 | **Optimization** | Reach the reward threshold, save model | Full timeout |
-| **Demo** | Deterministic video recording of saved model | 5 minutes |
+| **Demo** | Record video **+ confirm the measured metric clears the threshold** | 5 minutes |
 
-The Coder always saves the trained model (`best_model.zip`) after optimization. In the demo phase, the Tester bypasses LLM code generation entirely and runs a **deterministic video recording script** that auto-detects the SB3 algorithm, loads the saved model, and records evaluation episodes with RecordVideo. This eliminates the demo-phase loops that occurred when LLM-generated video code failed repeatedly.
+The Coder always saves the trained model (`best_model.zip`) after optimization. In the demo phase, the pipeline bypasses LLM code generation entirely and runs a **deterministic recording+eval script** that auto-detects the SB3 algorithm, loads the saved model, evaluates **20 fixed-seed episodes** (recording video for the first 5), and prints a **metric-aware** RESULT (`success_rate` for goal envs, else `mean_reward`). A **demo-reward gate** then requires that measured metric to clear the threshold too — a convincing-looking video whose policy still misses the goal no longer counts as solved; instead the env **regresses to optimization** (the checkpoint keeps training). This both eliminates the old demo-phase loops *and* closes the "passed on video alone" hole.
 
-After all three phases pass, the team advances to the next environment.
+After all three phases pass (demo metric included), the team advances to the next environment.
 
 ---
 
@@ -169,6 +173,8 @@ $env:PYTHONUTF8=1; python main.py
 | `config/night_run.yaml` | **Overnight run** — full hard env progression, honest scoreboard (solved vs skipped) |
 | `config/robot_arm_blind.yaml` | **Intelligence test** — panda-gym manipulation (sparse + goal-conditioned). No HER hint: does the team discover the structural fix itself? |
 | `config/robot_arm_seeded.yaml` | **Capability demo** — same, but the Codex is pre-seeded with the HER recipe → solves PandaPush/PickAndPlace |
+| `config/duo_robot_seeded.yaml` | **Duo pipeline** — the seeded panda progression run as Director → Coder → Executor (1 LLM role; Coder reads raw output) |
+| `config/duo_smoke.yaml` | **Duo 2-iteration sanity** — checks the duo wiring (needs Docker + Ollama) |
 
 ```bash
 # Reliable short demo for a presentation

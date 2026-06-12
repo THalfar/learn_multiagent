@@ -5,11 +5,19 @@ All agents extend `BaseAgent` (base.py). Each agent is a callable: `__call__(sta
 
 ```
 BaseAgent (base.py)
-  |-- Manager (manager.py)   -- local Ollama model
-  |-- Coder (coder.py)       -- local Ollama model
-  |-- Tester (tester.py)     -- local Ollama model
-  |-- Reviewer (reviewer.py) -- frontier API model (no model_switcher)
+  |-- Manager (manager.py)   -- local Ollama model      [quad]
+  |-- Coder (coder.py)       -- local Ollama model      [quad + duo]
+  |-- Tester (tester.py)     -- local Ollama model      [quad]
+  |-- Reviewer (reviewer.py) -- frontier API model      [quad]
+        |-- Director (director.py) -- frontier API model [duo]  (subclasses Reviewer)
+
+Executor (executor.py)       -- NOT a BaseAgent (no LLM) [duo]
+env_transitions.py           -- pure fns shared by Manager (delegates) + Director
 ```
+
+The **duo** pipeline (`pipeline: duo`) runs Director → Coder → Executor. The Director is
+strategist+judge+taskmaster in one call; the Executor is deterministic (no LLM). See the
+duo sections below; the quad agents are unchanged.
 
 ## base.py — BaseAgent (~1050 lines)
 The foundation class. Handles:
@@ -78,10 +86,11 @@ Executes code in Docker sandbox and analyzes results.
 - Sends analysis to Reviewer, can respond to Reviewer's `reviewer_tester_instruction`
 
 **Deterministic demo video recording:**
-- `_find_saved_model(output_dir)` — searches for `.zip` model files after optimization, prefers `best_model.zip`
-- `generate_video_script(env_name, model_path, output_dir)` — generates hardcoded Python script that auto-detects SB3 algorithm and records video with RecordVideo
-- In demo phase `__call__`: if `best_model_path` exists, bypasses LLM code entirely and runs deterministic script. Falls back to LLM flow if script fails.
+- `_find_saved_model(output_dir)` — `@staticmethod` (so the duo Executor can reuse it), searches for `.zip` model files, prefers `best_model.zip`
+- `generate_video_script(env_name, model_path, output_dir, metric="reward", n_eval_episodes=20, n_video_episodes=5)` — `@staticmethod`. Evaluates 20 FIXED-seed episodes (`reset(seed=2000+ep)`), records video for the first 5 (`episode_trigger=lambda e: e < 5`), and prints a **metric-aware** RESULT (`success_rate` via the `is_success` fraction for goal envs, else `mean_reward`). Root-cause fix for the demo-reward gate.
+- In demo phase `__call__`: passes `metric=current_env.metric`; sets `demo_reward` on EVERY return path (value or None); bypasses LLM code, falls back to LLM flow if the script fails.
 - After optimization: finds saved model and sets `best_model_path` in returned state
+- `compute_execution_timeout(config, base_timeout, phase)` — module-level (shared with the Executor): validation floor/multiplier, optimization full, demo `demo_timeout_seconds`
 
 **Rule-based diagnostics:**
 - `diagnose_common_issues()` — catches known failures (timeout+wrong device, wrong algo for action space, missing model.save, callback crashes, double .zip, EVAL NOISE: <20 eval episodes on a success_rate env) BEFORE LLM analysis
@@ -104,16 +113,40 @@ Docker config: `DOCKER_IMAGE = "citadel-rl:latest"`, `ALLOWED_DIR = output/`
 ## reviewer.py — Reviewer/SHODAN (~670 lines)
 Frontier API model that reviews code + results.
 - Phase-aware criteria (validation: "does it run?", optimization: "meets threshold?", demo: "video works?")
-- Deterministic gates that override an LLM APPROVE: threshold gate (real stdout reward vs threshold),
-  metric lock (success_rate must be in [0,1]), and the **resume gate** (`resume_required` without
-  `resume_ok` → REJECT; an unresumed chunk didn't accumulate, a passing fluke must not teach
-  that from-scratch chunks are fine)
+- Deterministic gates that override an LLM APPROVE — now via `src/utils/verdict_gates.apply_verdict_gates()`
+  (one shared, unit-testable implementation): threshold gate, metric lock (success_rate in [0,1]),
+  resume gate (`resume_required` without `resume_ok`), and the **demo gate** (the demo's measured
+  metric must clear the threshold; below → `demo_below_threshold` → Manager regresses demo→optimization).
+  A demo-gate rejection does NOT increment `consecutive_failures`. Returns `demo_below_threshold`.
 - Optimization criteria include the cumulative status (total steps, metric curve) + structural
   truths: timeout bounds ONE CHUNK (never order from-scratch / smaller chunks for low reward),
   and verified skills are pinned (SHODAN may not contradict them)
 - Manages Divine Codex: parses `prompt_rules: {add: [...], remove: [idx]}` from own output
 - Generates `reviewer_tester_instruction` for next iteration's Tester
 - No `model_switcher` — stays on API model always
+
+## director.py — Director (duo pipeline; `class Director(Reviewer)`)
+Frontier API model; the ONLY LLM in the duo pipeline. Subclasses Reviewer to inherit the api
+model, the "reviewer" timer bucket, `config.get_prompt("reviewer")`, and `generate_environment_switch_report`.
+One `__call__` does verdict(N−1) + task(N):
+1. **Bootstrap** — no task yet → deterministic first validation task (`env_transitions.initial_validation_task`), no LLM call.
+2. Deterministic context (ported from the Manager): cumulative status, SPS-sized chunk, resume block, escalation ladder, verified-skill precedence.
+3. ONE `call_llm_timed` → JSON `{approved, feedback, next_task, skill_ops, my_opinion}` (shared `json_extract.extract_json` + retry, fallback = reject + repeat task).
+4. `apply_verdict_gates` (same four gates). 5. `skill_ops` (never crash). 6. Progress-aware failsafe **+ immediate env-skip** (the Director can switch env in the same call). 7. Phase machine (validation→optimization→demo→solved/DONE; **demo-reward regression deterministically overrides the LLM's next_task**). 8. Logs as both reviewer (verdict) and manager (next task); returns **exactly one `iteration: 1`** per path.
+
+## executor.py — Executor (duo pipeline; NOT a BaseAgent — no LLM)
+Deterministic sandbox node mirroring `Tester.__call__` minus the LLM analysis/chat. Reuses the
+Tester's `run_in_container` / `diagnose_common_issues` / `check_video_files` / `auto_fix_common_issues` /
+`is_safe_code` / `compute_execution_timeout` / `Tester.generate_video_script` / `Tester._find_saved_model`.
+Emits a factual report: raw stdout/stderr + `=== AUTOMATED DIAGNOSTICS ===` (the Coder's raw-revision
+input), parsed RESULT → deterministic `test_results`, resume pre/post gates, cumulative tracking,
+`best_model_path`. Demo path is deterministic-ONLY (no LLM fallback) and sets `demo_reward`. NEVER
+returns `iteration`/`approved`/`current_task` or history/opinion keys.
+
+## env_transitions.py — shared env-transition helpers (pure functions, no LLM)
+`initial_validation_task(env)`, `env_switch_reset(idx, task, video_dir)` (incl. the demo-field reset),
+`skill_from_winning_code(code, env_name, env_tags)`. The Manager keeps 1-line delegating staticmethods
+(exercised by `smoke_test_fixes.py`); the Director imports the module functions directly.
 
 ## Patterns
 - Each agent's `__call__` follows: build prompt -> call LLM -> parse response -> update state -> return partial state

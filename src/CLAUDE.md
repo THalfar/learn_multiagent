@@ -24,12 +24,19 @@ src/utils/            -- Banners, logging, model switching, timing
 - `Config.get_prompt(agent_name)` -> `{"system": str, "task_template": str}`
 - Property accessors: `config.environment`, `config.agents`, `config.llm`, etc.
 
-### graph.py — LangGraph state machine
-- `AgentState` TypedDict — all shared state between agents
+### graph.py — Quad LangGraph state machine
+- `AgentState` TypedDict — all shared state between agents (both pipelines use this shape)
 - `create_graph(config)` -> compiled LangGraph app
 - Flow: Manager -> Coder -> Tester -> Reviewer -> conditional edge (continue/end)
 - `should_continue()` — handles phase transitions (validation -> optimization -> demo) and environment progression
 - `ModelSwitcher` created here, passed to local agents (not Reviewer who stays on API)
+
+### duo_graph.py — Duo LangGraph state machine
+- `create_duo_graph(config)` -> compiled app. Same `AgentState` shape (+ the demo fields;
+  the quad-only `reviewer_tester_instruction`/`tester_reviewer_response` stay unused).
+- Flow: Director -> (cond: DONE / max_iterations -> END, else) -> Coder -> Executor -> Director
+- The Director is the entry node AND the only `iteration`-incrementing node.
+- `main.py` selects `create_duo_graph` vs `create_graph` on `config.pipeline`.
 
 ## State Fields (AgentState)
 | Field | Type | Purpose |
@@ -56,8 +63,10 @@ src/utils/            -- Banners, logging, model switching, timing
 | `total_env_steps` | `int` | Cumulative timesteps trained this env across chunks (reset on env switch) |
 | `metric_history` | `List` | RESULT value per optimization chunk this env — the curve Manager/SHODAN see |
 | `measured_sps` | `float` | Measured training steps/sec (runs ≥5000 steps) — Manager sizes chunks from it |
-| `resume_required` | `bool` | Optimization ran with an existing checkpoint (Tester sets) |
-| `resume_ok` | `bool` | stdout proved `RESUMED: buffer_transitions=N` (N>0) — Reviewer's resume gate |
+| `resume_required` | `bool` | Optimization ran with an existing checkpoint (Tester/Executor sets) |
+| `resume_ok` | `bool` | stdout proved `RESUMED: buffer_transitions=N` (N>0) — Reviewer/Director resume gate |
+| `demo_reward` | `Any` | Demo phase's measured metric (None = no measurement) — the demo-reward gate's input |
+| `demo_below_threshold` | `bool` | Demo measured below threshold → Manager/Director regresses demo→optimization |
 
 ## Conventions
 - `iteration` uses `Annotated[int, operator.add]` — LangGraph auto-adds return values
