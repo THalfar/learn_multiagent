@@ -24,7 +24,10 @@ The foundation class. Handles:
 
 Key methods:
 - `_call_llm(system_prompt, user_prompt)` — main LLM call with retry, timing, token tracking
-- `_ensure_model_loaded()` — Ollama model swap (skip if same model already loaded)
+- `_ensure_model_loaded()` — Ollama model swap (skip if same model already loaded); single
+  source of truth for the unload+preload+spinner sequence (was copy-pasted in call_llm_timed/call_llm)
+- `render_template(template, **kwargs)` — `format_map` with empty-default for missing keys, so
+  OPTIONAL placeholders (e.g. `{shodan_rules}`) need no per-call try/except KeyError fallback
 - `_estimate_tokens(text)` — rough token count (chars/3.5)
 - `log_context_to_conversation(state)` — writes context usage to conversation logger
 - `format_agent_opinions_context(state)` — formats team chatter for prompt injection
@@ -43,8 +46,12 @@ Orchestrates the pipeline. Responsibilities:
 Key: Manager checks `current_phase` and `approved` to decide next action. On phase transition, it updates state in-place and continues to task generation.
 
 Learning features:
-- `_extract_recipe_from_code()` — regex-extracts algo/steps/device from winning code
-- `_format_playbook_context()` — formats learned recipes for prompt injection
+- `_skill_from_winning_code(code, env_name, env_tags)` — on env-solve, distils a verified
+  PROCEDURAL skill (algo + policy + HER + checkpoint + metric) into the SkillStore. This
+  REPLACED the old regex "playbook" (`_extract_recipe_from_code`/`_format_playbook_context`,
+  removed) which captured only algo/steps/device, reached only the Manager, and printed
+  'unknown' whenever its regex missed. Env family comes from `EnvironmentStep.tags` (the
+  env-id substring heuristic is only a fallback).
 - Failsafe: skips to next env after N consecutive failures (configurable)
 - `_env_switch_reset()` — shared state reset for ALL env-switch paths (solved/failsafe/LLM);
   sets a concrete validation task (`_initial_validation_task`) + matching `manager_guidance`
@@ -83,7 +90,8 @@ Executes code in Docker sandbox and analyzes results.
 **Checkpoint-resume enforcement (optimization):**
 - Pre-Docker: if a checkpoint exists (`_find_saved_model`), the script must satisfy
   `check_resume_contract()` (load model + buffer, RESUMED print, save both) — otherwise
-  Docker is skipped and the iteration fails fast with `last_failure_type="resume_violation"`
+  Docker is skipped and the iteration fails fast (test_results carries "RESUME CONTRACT FAILED",
+  which the Reviewer classifies into `failure_history` for the escalation ladder)
 - Post-run: stdout must contain `RESUMED: buffer_transitions=N` with N>0, else
   `resume_ok=False` and test_results is prefixed with RESUME CHECK FAILED
 - Cumulative tracking: appends to `metric_history`, adds parsed steps to `total_env_steps`,
@@ -110,6 +118,7 @@ Frontier API model that reviews code + results.
 ## Patterns
 - Each agent's `__call__` follows: build prompt -> call LLM -> parse response -> update state -> return partial state
 - Prompt templates loaded via `self.config.get_prompt(self.agent_name)`
-- `.format()` with named placeholders; try/except KeyError for optional vars
+- `self.render_template(template, **kwargs)` with named placeholders; optional vars (e.g.
+  `{shodan_rules}`) render empty when a prompt file omits them — no try/except KeyError needed
 - All agents log to `conversation_logger` from state
 - `iteration` returned as 1 (auto-added by LangGraph's Annotated[int, operator.add])

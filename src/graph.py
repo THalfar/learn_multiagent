@@ -47,13 +47,10 @@ def create_graph(config: Config):
         shodan_rules: List[Dict[str, Any]]  # [{"rule": "...", "iteration": N}, ...]
         # Failsafe: skip env after repeated failures
         consecutive_failures: int  # Peräkkäisten REJECTED-iteraatioiden laskuri
-        last_failure_type: str  # "timeout" | "crash" | "low_reward" | ""
         # Honest scoreboard + progress-aware failsafe
         skipped_environments: List[str]  # Envs abandoned via failsafe (NOT solved)
         best_reward_this_env: Any  # Best real reward seen for the current env
         best_reward_env_index: int  # Which env index best_reward_this_env refers to
-        # Manager's Playbook: ympäristöreseptit edellisistä enveistä
-        playbook: List[Dict[str, Any]]  # [{"env": "CartPole-v1", "algo": "PPO", ...}]
         # A3: Coder self-memory - last few (code, diagnosis, verdict) attempts
         recent_attempts: List[Dict[str, Any]]  # [{"iter": N, "verdict": str, "diagnosis": str, "reason": str}]
         # A6: Tester's concise diagnosis of the latest run (feeds recent_attempts)

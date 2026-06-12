@@ -10,6 +10,8 @@ Pydantic-validated via `src/config_loader.py` (`ProjectConfig` model).
 
 Key sections:
 - `environment` / `environment_progression` — Gymnasium env specs, thresholds, timeouts, device (cpu/gpu)
+  - `metric: reward|success_rate` — goal-conditioned envs are scored by the `is_success` fraction in [0,1]
+  - `tags: [..]` — optional env-family tags (e.g. `['goal','her','manipulation']`) for SKILL retrieval; declaring them avoids the Coder/Manager hard-coding `panda`/`fetch` substring checks (which remain a fallback)
 - `agents` — `max_iterations`, `history_window` (per-agent siloed history), `agent_opinions` (team chatter)
 - `llm` / `agent_llm` / `ollama` — Model names per agent, Ollama base URL, runtime options
   - `ollama.options` — Global Ollama options (num_gpu, num_thread, etc.) applied to all models
@@ -44,7 +46,7 @@ Special placeholders in coder's prompt:
 - `{shodan_rules_display}` — Human-readable rules display
 
 ### prompts.yaml — Original detailed prompts
-Larger, more constrained prompts. Same structure as opus_prompts.yaml but without `{shodan_rules}` placeholders (fallback via try/except KeyError in coder.py).
+Larger, more constrained prompts. Same structure as opus_prompts.yaml but without `{shodan_rules}` placeholders — `BaseAgent.render_template()` renders an absent optional placeholder as empty, so no per-call try/except KeyError fallback is needed.
 
 ## Conventions
 - YAML uses `{{` for literal braces (Python `.format()` escaping)

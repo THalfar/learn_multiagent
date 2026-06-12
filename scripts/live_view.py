@@ -39,15 +39,33 @@ def resolve_paths(arg):
     return candidate, os.path.join(candidate, "conversation.md")
 
 
+# Cache the rendered HTML keyed on the file's (mtime, size). Clients poll /content
+# every few seconds for hours; between agent steps the file is unchanged, so without
+# this each poll re-read + re-parsed the whole (growing) markdown for nothing.
+_render_cache = {"key": None, "html": None}
+
+
 def render_body(md_path):
     if not os.path.isfile(md_path):
         return "<h2>Waiting for conversation.md&hellip;</h2><p>Looked for: <code>{}</code></p>".format(
             html.escape(md_path))
+    try:
+        st = os.stat(md_path)
+        key = (md_path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and _render_cache["key"] == key:
+        return _render_cache["html"]
     with open(md_path, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
     if _markdown is not None:
-        return _markdown.markdown(text, extensions=["fenced_code", "tables", "nl2br"])
-    return "<pre>{}</pre>".format(html.escape(text))
+        body = _markdown.markdown(text, extensions=["fenced_code", "tables", "nl2br"])
+    else:
+        body = "<pre>{}</pre>".format(html.escape(text))
+    if key is not None:
+        _render_cache["key"] = key
+        _render_cache["html"] = body
+    return body
 
 
 PAGE = """<!DOCTYPE html>

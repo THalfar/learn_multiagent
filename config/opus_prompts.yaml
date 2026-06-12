@@ -77,7 +77,6 @@ manager:
     Device: {device}
     Video dir: {video_dir}
     Iteration: {iteration}/{max_iterations}
-    {playbook_context}
     WHAT'S HAPPENED:
     - Tasks so far: {tasks}
     - Latest code: {code_summary}

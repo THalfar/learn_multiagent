@@ -9,39 +9,25 @@ class Manager(BaseAgent):
         super().__init__(config, "manager", model_switcher=model_switcher)
 
     @staticmethod
-    def _extract_recipe_from_code(code: str, env_name: str, iterations: int) -> dict:
-        """Extract algorithm, timesteps, device from successful code."""
+    def _skill_from_winning_code(code: str, env_name: str, env_tags=None) -> dict:
+        """B6: build a PROCEDURAL skill from winning code (far richer than a regex
+        recipe). Captures algorithm + policy class + HER + the metric/checkpoint
+        approach, so the NEXT env's Coder inherits the full recipe, not just 'SAC'.
+        env_tags (from EnvironmentStep.tags) declare the family; the env-id substring
+        heuristic is only a fallback when no tags are declared."""
         import re
-        recipe = {"env": env_name, "iterations": iterations}
-
-        # Algorithm
-        algo_match = re.search(r'\b(PPO|SAC|A2C|DQN|TD3)\b', code)
-        recipe["algo"] = algo_match.group(1) if algo_match else "unknown"
-
-        # Timesteps
-        steps_match = re.search(r'total_timesteps\s*=\s*(\d+)', code)
-        recipe["steps"] = int(steps_match.group(1)) if steps_match else 0
-
-        # Device
-        device_match = re.search(r'device\s*=\s*["\'](\w+)["\']', code)
-        recipe["device"] = device_match.group(1) if device_match else "unknown"
-
-        return recipe
-
-    @staticmethod
-    def _skill_from_winning_code(code: str, env_name: str) -> dict:
-        """B6: build a PROCEDURAL skill from winning code (far richer than the regex
-        playbook). Captures algorithm + policy class + HER + the metric/checkpoint
-        approach, so the NEXT env's Coder inherits the full recipe, not just 'SAC'."""
-        import re
+        env_tags = [t.lower() for t in (env_tags or [])]
         algo_m = re.search(r'\b(PPO|SAC|A2C|DQN|TD3|DDPG)\b', code)
         algo = algo_m.group(1) if algo_m else "the same algorithm"
         policy = ("MultiInputPolicy" if "MultiInputPolicy" in code
                   else ("CnnPolicy" if "CnnPolicy" in code else "MlpPolicy"))
         uses_her = "HerReplayBuffer" in code
-        is_goal = uses_her or "MultiInputPolicy" in code or "desired_goal" in code
+        is_goal = (uses_her or "MultiInputPolicy" in code or "desired_goal" in code
+                   or "goal" in env_tags or "success_rate" in env_tags)
         lname = env_name.lower()
-        family = "panda / robotic manipulation" if ("panda" in lname or "fetch" in lname) else env_name
+        is_manip = ("manipulation" in env_tags or "robotics" in env_tags
+                    or "panda" in lname or "fetch" in lname)
+        family = "panda / robotic manipulation" if is_manip else env_name
         proc = [f"Use {algo} with policy='{policy}'"]
         if uses_her:
             proc.append("replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal':4,'goal_selection_strategy':'future'}")
@@ -60,7 +46,8 @@ class Manager(BaseAgent):
             "verification": ("RESULT line prints success_rate in [0,1] >= the env threshold."
                              if is_goal else "RESULT mean_reward >= the env threshold."),
             "source_env": env_name,
-            "tags": (["goal", "her", "manipulation", "robotics", "success_rate"] if is_goal else ["general"]),
+            "tags": (sorted(set(env_tags) | {"goal", "her", "manipulation", "robotics", "success_rate"}) if is_goal
+                     else (env_tags or ["general"])),
             "status": "verified",
             "confidence": 0.9,
         }
@@ -94,7 +81,6 @@ class Manager(BaseAgent):
             "current_env_index": next_env_index,
             "current_phase": "validation",
             "consecutive_failures": 0,
-            "last_failure_type": "",
             "failure_history": [],
             "recent_attempts": [],
             "diagnosis": "",
@@ -116,16 +102,6 @@ class Manager(BaseAgent):
             "resume_required": False,
             "resume_ok": True,
         }
-
-    @staticmethod
-    def _format_playbook_context(playbook: list) -> str:
-        """Format playbook as human-readable context for Manager prompt."""
-        if not playbook:
-            return ""
-        lines = ["\nLESSONS FROM PREVIOUS ENVIRONMENTS (use similar approaches for similar envs):"]
-        for entry in playbook:
-            lines.append(f"  - {entry['env']}: {entry.get('algo','?')}, {entry.get('steps','?')} steps, device={entry.get('device','?')}, solved in {entry.get('iterations','?')} iterations")
-        return "\n".join(lines) + "\n"
 
     def _generate_environment_switch_report(self, current_env, next_env, solved_environments, env_progression, state):
         """Generate a report to leadership about environment switch"""
@@ -514,37 +490,34 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                     new_video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{next_env.name}/videos"))
                     os.makedirs(new_video_dir, exist_ok=True)
 
-                    # Save recipe to Playbook before switching
-                    playbook = list(state.get("playbook", []))
+                    # Distil a PROCEDURAL verified SKILL from the winning code so the next
+                    # env's Coder inherits the full recipe (algo + policy + HER + checkpoint),
+                    # not just regex values. This is the SKILL substrate that replaced the old
+                    # regex "playbook" (which captured only algo/steps/device and reached only
+                    # the Manager, and printed 'unknown' whenever its regex missed).
                     winning_code = state.get("code", "")
                     iterations_used = state.get("iteration", 0)
                     if winning_code:
-                        recipe = self._extract_recipe_from_code(winning_code, current_env.name, iterations_used)
-                        playbook.append(recipe)
-                        print(f"[bold cyan]📖 Playbook: {current_env.name} → {recipe.get('algo','?')}, {recipe.get('steps','?')} steps, {recipe.get('device','?')}[/bold cyan]")
-                        # B6: distil a PROCEDURAL verified SKILL so the next env's Coder inherits
-                        # the full recipe (algo + policy + HER + checkpoint), not just regex values.
                         _ss = state.get("skill_store", None)
                         if _ss is not None:
                             try:
-                                _sk = self._skill_from_winning_code(winning_code, current_env.name)
+                                _sk = self._skill_from_winning_code(winning_code, current_env.name, getattr(current_env, "tags", None))
                                 _sid = _ss.add(created_iter=iterations_used, **_sk)
                                 _ss.save()
                                 print(f"[bold magenta]🧠 SKILL learned (verified): [{_sid}] {_sk['name']}[/bold magenta]")
                             except Exception as _e:
                                 print(f"[dim]skill distil failed: {_e}[/dim]")
 
-                    # Reset state for new environment (preserve env_switch_reports + playbook
-                    # for history!). The reset includes a CONCRETE validation task + matching
-                    # manager_guidance - an empty task here caused the stale-task race (the
-                    # Coder improvised for the NEW env while the Reviewer still judged against
-                    # the OLD env's task; one wasted iteration + wrong blame at every switch).
+                    # Reset state for new environment (preserve env_switch_reports for history).
+                    # The reset includes a CONCRETE validation task + matching manager_guidance -
+                    # an empty task here caused the stale-task race (the Coder improvised for the
+                    # NEW env while the Reviewer still judged against the OLD env's task; one
+                    # wasted iteration + wrong blame at every switch).
                     _next_task = self._initial_validation_task(next_env)
                     _reset = self._env_switch_reset(next_env_index, _next_task, new_video_dir)
                     _reset.update({
                         "solved_environments": solved_environments,
                         "env_switch_reports": env_switch_reports,  # Preserve kierrosraportit history!
-                        "playbook": playbook,  # Preserve learned recipes!
                     })
                     return _reset
                 else:
@@ -740,9 +713,6 @@ CRITICAL API RULES:
         else:
             phase_instruction = ""
 
-        # Format playbook context from learned recipes
-        playbook_context = self._format_playbook_context(state.get("playbook", []))
-
         # A7: escalation ladder - if the SAME failure mode repeats 3x, instruct the Manager
         # to change the STRATEGY CLASS, not the parameter. Appended to phase_instruction so
         # no prompt-template placeholder change is needed.
@@ -779,49 +749,27 @@ CRITICAL API RULES:
                         "Build the task so it implements the skill's procedure.\n" + _sk_txt
                     )
 
-        try:
-            task_template = prompt_dict["task_template"].format(
-                tasks=state.get("tasks", []),
-                code_summary=code_summary,
-                test_results=state.get("test_results", ""),
-                review_feedback=review_feedback,
-                review_suggestions=review_suggestions,
-                iteration=expected_iteration,
-                max_iterations=self.config.agents.max_iterations,
-                environment=current_env_name,
-                success_threshold=current_success_threshold,
-                video_dir=state.get("video_dir", self.config.video.output_dir),
-                env_progression_info=env_progression_info,
-                solved_envs=", ".join(solved_environments) if solved_environments else "None",
-                agent_opinions_context=agent_opinions_context,
-                playbook_context=playbook_context,
-                # Environment specs for Coder
-                obs_dim=obs_dim,
-                action_type=action_type,
-                action_dim=action_dim,
-                device=device,
-            )
-        except KeyError:
-            # Fallback if template doesn't have {playbook_context}
-            task_template = prompt_dict["task_template"].format(
-                tasks=state.get("tasks", []),
-                code_summary=code_summary,
-                test_results=state.get("test_results", ""),
-                review_feedback=review_feedback,
-                review_suggestions=review_suggestions,
-                iteration=expected_iteration,
-                max_iterations=self.config.agents.max_iterations,
-                environment=current_env_name,
-                success_threshold=current_success_threshold,
-                video_dir=state.get("video_dir", self.config.video.output_dir),
-                env_progression_info=env_progression_info,
-                solved_envs=", ".join(solved_environments) if solved_environments else "None",
-                agent_opinions_context=agent_opinions_context,
-                obs_dim=obs_dim,
-                action_type=action_type,
-                action_dim=action_dim,
-                device=device,
-            )
+        task_template = self.render_template(
+            prompt_dict["task_template"],
+            tasks=state.get("tasks", []),
+            code_summary=code_summary,
+            test_results=state.get("test_results", ""),
+            review_feedback=review_feedback,
+            review_suggestions=review_suggestions,
+            iteration=expected_iteration,
+            max_iterations=self.config.agents.max_iterations,
+            environment=current_env_name,
+            success_threshold=current_success_threshold,
+            video_dir=state.get("video_dir", self.config.video.output_dir),
+            env_progression_info=env_progression_info,
+            solved_envs=", ".join(solved_environments) if solved_environments else "None",
+            agent_opinions_context=agent_opinions_context,
+            # Environment specs for Coder
+            obs_dim=obs_dim,
+            action_type=action_type,
+            action_dim=action_dim,
+            device=device,
+        )
         system_prompt = prompt_dict["system"].format(
             environment=current_env_name,
             success_threshold=current_success_threshold

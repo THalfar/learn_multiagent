@@ -1,3 +1,4 @@
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List
@@ -5,10 +6,17 @@ from datetime import datetime
 
 # ── API pricing (USD per 1M tokens) ──────────────────────────────────────────
 # Only the api/reviewer agent (SHODAN) is billed; local Ollama agents are free.
-# Defaults: xAI grok-4.3 (2026-06). Edit here if prices change.
+# Defaults: xAI grok-4.3 (2026-06). Edit here if prices change. The model NAME shown
+# in reports is read from $LLM_MODEL (the actual billed model) so a model override
+# isn't mislabelled; only the per-token RATES above are grok-4.3-specific.
 PRICE_INPUT_PER_1M = 1.25
 PRICE_CACHED_INPUT_PER_1M = 0.20
 PRICE_OUTPUT_PER_1M = 2.50
+
+
+def get_api_model_name() -> str:
+    """The API model actually in use (matches base.py's os.getenv default), for labels."""
+    return os.getenv("LLM_MODEL", "grok-4.3")
 
 
 @dataclass
@@ -117,6 +125,7 @@ class RunStatistics:
         cached_cost = cached * PRICE_CACHED_INPUT_PER_1M / 1_000_000
         output_cost = tokens_out * PRICE_OUTPUT_PER_1M / 1_000_000
         return {
+            "model": get_api_model_name(),
             "api_calls": len(api_timings),
             "input_tokens": tokens_in,
             "cached_input_tokens": cached,
@@ -218,7 +227,7 @@ class RunStatistics:
         cost = self.get_cost()
         if cost["api_calls"] > 0:
             c_in = cost["input_cost_usd"] + cost["cached_input_cost_usd"]
-            print("\n💰 API COST (SHODAN / grok-4.3 — local agents are free):")
+            print(f"\n💰 API COST (SHODAN / {cost['model']} — local agents are free):")
             print("-"*60)
             print(f"  Input:  {cost['input_tokens']:,} tok ({cost['cached_input_tokens']:,} cached @ ${PRICE_CACHED_INPUT_PER_1M}/1M) -> ${c_in:.4f}")
             print(f"  Output: {cost['output_tokens']:,} tok -> ${cost['output_cost_usd']:.4f}")

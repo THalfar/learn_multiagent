@@ -58,8 +58,19 @@ Fast (~ms) structural checks before the expensive container run:
 when a checkpoint exists. Used by the Coder's lint-retry loop and the Tester's
 pre-Docker resume gate.
 
+### result_parser.py — Canonical RESULT-line parser
+- `parse_result_line(stdout) -> {value, metric, std, episodes}` — the SINGLE source of truth
+  for the Coder's `RESULT: mean_reward=X, std_reward=Y, episodes=Z` line (also accepts
+  `success_rate=` as the metric key). `value` is `None` when there is no RESULT line
+  (crash/timeout/no eval) — callers treat that as "no reward", never 0.
+- Used by the Tester (ground-truth reconciliation, cumulative tracking, video caption) and
+  the Reviewer (threshold/metric gate). One regex here instead of copy-pasted in both files —
+  a format drift fixed in one but not the other used to force-reject every iteration.
+
 ### timer.py — Timing and statistics
 - `AgentTiming` — per-call timing with token counts
+- `get_api_model_name()` / `get_cost()["model"]` — the billed API model NAME read from
+  `$LLM_MODEL` (matches base.py) so cost reports aren't mislabelled when the model is overridden
 - `RunStatistics` — aggregates all timings, generates per-agent and per-iteration breakdowns
 - `save_to_file()` — JSON export to `output/{run_id}/statistics.json`
 - `get_agent_token_stats()` — token in/out/total with min/max/avg/median

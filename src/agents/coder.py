@@ -260,12 +260,15 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         # legacy flat shodan_rules list if no skill_store is present in state.
         skill_store = state.get("skill_store", None)
         env_name_now = current_env.name if current_env else self.config.environment.name
-        _tags = []
-        _lname = env_name_now.lower()
-        if "panda" in _lname or "fetch" in _lname:
-            _tags += ["goal", "her", "manipulation", "robotics"]
+        # Prefer the env's declared tags (config); fall back to the env-id substring
+        # heuristic only when none are declared. The metric tag is always derived.
+        _tags = list(getattr(current_env, "tags", []) or []) if current_env else []
+        if not _tags:
+            _lname = env_name_now.lower()
+            if "panda" in _lname or "fetch" in _lname:
+                _tags = ["goal", "her", "manipulation", "robotics"]
         if current_env and getattr(current_env, "metric", "reward") == "success_rate":
-            _tags += ["goal", "success_rate"]
+            _tags = _tags + ["goal", "success_rate"]
 
         if skill_store is not None:
             shodan_rules_text = skill_store.render_for_coder(env_name=env_name_now, tags=_tags)
@@ -292,24 +295,17 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
             else:
                 shodan_rules_text = ""
 
-        # Try formatting with shodan_rules, fall back without if template doesn't have it
-        try:
-            task_template = prompt_dict["task_template"].format(
-                current_task=state.get("current_task", ""),
-                environment=self.config.environment.name,
-                video_dir=video_dir,
-                iteration=iteration,
-                device=device,
-                shodan_rules=shodan_rules_text,
-            )
-        except KeyError:
-            task_template = prompt_dict["task_template"].format(
-                current_task=state.get("current_task", ""),
-                environment=self.config.environment.name,
-                video_dir=video_dir,
-                iteration=iteration,
-                device=device,
-            )
+        # Optional {shodan_rules} placeholder: render_template tolerates prompt files
+        # that omit it (renders empty) without a duplicated fallback format() call.
+        task_template = self.render_template(
+            prompt_dict["task_template"],
+            current_task=state.get("current_task", ""),
+            environment=self.config.environment.name,
+            video_dir=video_dir,
+            iteration=iteration,
+            device=device,
+            shodan_rules=shodan_rules_text,
+        )
         
         # Get code context (previous iteration's code)
         code_context = self._get_code_context(state)

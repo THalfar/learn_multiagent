@@ -30,6 +30,7 @@ class EnvironmentStep(BaseModel):
     action_type: Optional[ActionType] = Field(default=None, description="Action space type: discrete or continuous")
     action_dim: Optional[int] = Field(default=None, description="Action space dimension")
     device: DeviceType = Field(default="cpu", description="Training device: cpu (fast for small MLPs), gpu (large networks), auto (system decides)")
+    tags: list[str] = Field(default_factory=list, description="Optional env-family tags for SKILL retrieval (e.g. ['goal','her','manipulation','robotics']). Declared here so the Coder/Manager don't hard-code 'panda'/'fetch' substring heuristics; the substring fallback still applies when this is empty.")
 
 class Algorithm(BaseModel):
     model_config = ConfigDict(extra='forbid')

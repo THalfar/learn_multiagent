@@ -5,6 +5,7 @@ import subprocess
 import platform
 from pathlib import Path
 from .base import BaseAgent
+from src.utils.result_parser import parse_result_line
 from rich import print
 from rich.markup import escape as rich_escape
 
@@ -954,7 +955,6 @@ for vf in video_files:
                     "test_results": "LINT FAILED (Docker skipped - fix these structural errors):\n" + _lint.feedback(),
                     "execution_stdout": "",
                     "execution_stderr": "LINT FAILED:\n" + _lint.feedback(),
-                    "last_failure_type": "lint_fail",
                     "diagnosis": ("LINT FAILED: " + _lint.feedback())[:300],  # don't leave a stale diagnosis
                 }
 
@@ -1025,7 +1025,6 @@ for vf in video_files:
                                          "so training accumulates:\n" + _fb),
                         "execution_stdout": "",
                         "execution_stderr": "RESUME CONTRACT FAILED:\n" + _fb,
-                        "last_failure_type": "resume_violation",
                         "diagnosis": ("RESUME CONTRACT FAILED: " + "; ".join(_violations))[:400],
                         "resume_required": True,
                         "resume_ok": False,
@@ -1117,8 +1116,7 @@ for vf in video_files:
                             try:
                                 valid_videos = [vf for vf in video_check["video_files"]
                                                 if vf.get("is_valid") and not vf.get("is_empty")]
-                                reward_match = re.search(r"mean[_ ]reward[^0-9\-]*(-?\d+(?:\.\d+)?)", stdout, re.IGNORECASE)
-                                mean_reward = float(reward_match.group(1)) if reward_match else None
+                                mean_reward = parse_result_line(stdout)["value"]
                                 logger.log_video(current_env_name, valid_videos, mean_reward=mean_reward)
                             except Exception as video_log_err:
                                 print(f"[dim]Could not embed video in log: {video_log_err}[/dim]")
@@ -1624,17 +1622,15 @@ for vf in video_files:
                 # crashed and printed no "RESULT: mean_reward=X" line — they copy a previous
                 # iteration's number from history. Reconcile against the actual stdout so the
                 # approve/reject logic never judges a phantom reward.
-                _result_match = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", stdout or "")
-                if _result_match:
+                _parsed_result = parse_result_line(stdout)
+                if _parsed_result["value"] is not None:
                     # Real RESULT line present -> its numbers are authoritative (also fixes the
                     # local model's occasional sign flip, e.g. +192.35 reported as -192.35).
-                    metrics["mean_reward"] = float(_result_match.group(1))
-                    _std_match = re.search(r"std_reward\s*=\s*(-?\d+(?:\.\d+)?)", stdout or "")
-                    if _std_match:
-                        metrics["std_reward"] = float(_std_match.group(1))
-                    _eps_match = re.search(r"episodes\s*=\s*(\d+)", stdout or "")
-                    if _eps_match:
-                        metrics["n_episodes"] = int(_eps_match.group(1))
+                    metrics["mean_reward"] = _parsed_result["value"]
+                    if _parsed_result["std"] is not None:
+                        metrics["std_reward"] = _parsed_result["std"]
+                    if _parsed_result["episodes"] is not None:
+                        metrics["n_episodes"] = _parsed_result["episodes"]
                     try:
                         # Higher reward is always better; threshold is a minimum.
                         metrics["meets_threshold"] = float(metrics["mean_reward"]) >= float(success_threshold)
@@ -1846,12 +1842,12 @@ for vf in video_files:
             # Makes (non-)accumulation VISIBLE: total steps trained this env + the metric
             # curve. Three flat chunks with resume active => the Manager/Reviewer can see
             # the mechanism is broken instead of blaming hyperparameters.
-            _res_m = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", stdout or "")
+            _res_val = parse_result_line(stdout)["value"]
             _steps_m = (re.search(r"total_timesteps\s*=\s*(\d+)", code)
                         or re.search(r"\.learn\(\s*(\d+)", code))
-            if _res_m:
+            if _res_val is not None:
                 if current_phase == "optimization":
-                    result_dict["metric_history"] = (state.get("metric_history") or []) + [float(_res_m.group(1))]
+                    result_dict["metric_history"] = (state.get("metric_history") or []) + [_res_val]
                 if _steps_m:
                     _steps_done = int(_steps_m.group(1))
                     result_dict["total_env_steps"] = (state.get("total_env_steps") or 0) + _steps_done

@@ -36,8 +36,11 @@ if __name__ == "__main__":
     # PHASE B: procedural skill memory (persistent across runs; replaces the flat Codex).
     from src.skills import SkillStore
     skill_store = SkillStore(skills_dir=config.skills_dir).load()
+    _skills_was_empty = not skill_store.skills
     skill_store.seed_if_empty(initial_skills=config.initial_skills, initial_rules=config.initial_codex_rules)
-    skill_store.save()
+    if _skills_was_empty and skill_store.skills:
+        skill_store.save()  # only persist when seeding actually added skills; an
+                            # existing store's canonical file is already on disk from load()
 
     initial_state = {
         "run_id": run_id,
@@ -66,13 +69,10 @@ if __name__ == "__main__":
         "shodan_rules": [{"rule": r, "iteration": 0} for r in config.initial_codex_rules],
         # Failsafe: skip env after repeated failures
         "consecutive_failures": 0,
-        "last_failure_type": "",
         # Honest scoreboard + progress-aware failsafe
         "skipped_environments": [],
         "best_reward_this_env": None,
         "best_reward_env_index": -1,
-        # Manager's Playbook: learned recipes from solved environments
-        "playbook": [],
         # A3 Coder self-memory / A6 diagnosis / A7 escalation / Phase B skill store
         "recent_attempts": [],
         "diagnosis": "",

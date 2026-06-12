@@ -1,5 +1,6 @@
 import json
 from .base import BaseAgent
+from src.utils.result_parser import parse_result_line
 from rich import print
 
 class Reviewer(BaseAgent):
@@ -171,29 +172,19 @@ REJECT (approved: false) ONLY when:
 
         prompt_dict = self.config.get_prompt("reviewer")
 
-        # Try formatting with shodan_rules_display, fall back without if template doesn't have it
-        try:
-            task_template = prompt_dict["task_template"].format(
-                manager_guidance=manager_guidance,
-                code=code,
-                test_results=test_results,
-                success_threshold=success_threshold,
-                video_dir=state.get("video_dir", "output/videos"),
-                agent_opinions_context=agent_opinions_context,
-                tester_response=tester_response,
-                shodan_rules_display=shodan_rules_display,
-            )
-        except KeyError:
-            # Prompt template doesn't have {shodan_rules_display} - use without it
-            task_template = prompt_dict["task_template"].format(
-                manager_guidance=manager_guidance,
-                code=code,
-                test_results=test_results,
-                success_threshold=success_threshold,
-                video_dir=state.get("video_dir", "output/videos"),
-                agent_opinions_context=agent_opinions_context,
-                tester_response=tester_response,
-            )
+        # Optional {shodan_rules_display} placeholder: render_template tolerates prompt
+        # files that omit it (renders empty) without a duplicated fallback format() call.
+        task_template = self.render_template(
+            prompt_dict["task_template"],
+            manager_guidance=manager_guidance,
+            code=code,
+            test_results=test_results,
+            success_threshold=success_threshold,
+            video_dir=state.get("video_dir", "output/videos"),
+            agent_opinions_context=agent_opinions_context,
+            tester_response=tester_response,
+            shodan_rules_display=shodan_rules_display,
+        )
         system_prompt = prompt_dict["system"].format(
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos")
@@ -402,8 +393,7 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         # optimization threshold gate and the progress-aware failsafe below.
         _cur_env_idx = state.get("current_env_index", 0)
         _stdout_real = state.get("execution_stdout", "") or ""
-        _rm = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", _stdout_real)
-        _real_reward = float(_rm.group(1)) if _rm else None
+        _real_reward = parse_result_line(_stdout_real)["value"]
         # OPTIMIZATION GATE: an env passes optimization ONLY if the real reward meets the
         # threshold. No "the threshold is the bug" rhetoric can override the math. (Validation
         # just checks the code runs; demo is judged on the video, not the reward.)
@@ -667,7 +657,6 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "reviewer_tester_instruction": tester_instruction,  # For tester in next iteration
             "shodan_rules": shodan_rules,  # Updated Divine Codex
             "consecutive_failures": consecutive_failures,
-            "last_failure_type": last_failure_type,
             "best_reward_this_env": best_reward,
             "best_reward_env_index": _cur_env_idx,
             "recent_attempts": recent_attempts,   # A3 Coder self-memory

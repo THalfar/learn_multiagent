@@ -32,8 +32,8 @@ Phase transitions happen INSIDE Manager's `__call__` — Manager updates the pha
 - **Pre-Docker lint** (`src/utils/code_lint.py`) — a fast "pre-Tester" feedback arc: ast syntax + exact env name + import whitelist + **SB3 kwarg validation** (curated signatures for SAC/PPO/DQN/TD3/A2C/DDPG/HerReplayBuffer/`.learn()`; a hallucinated kwarg like `online_sample_strategy` is a hard error — it burned 7 iterations in one night run) + the **checkpoint-resume contract** (`require_resume=True` in optimization when a checkpoint exists), in ~ms. The Coder lint-retries (K=2) before the expensive Docker run; the Tester also lint-backstops (skips Docker on structural errors). NOT a bypass — the Tester still runs the container and does the semantic diagnosis.
 - **Coder self-memory** (`recent_attempts` state) — the Coder sees its last ~2 attempts + the Tester's diagnosis + the Reviewer's verdict, so it doesn't repeat a corrected mistake.
 - **Manager escalation ladder** (`failure_history` state) — if the same failure mode repeats 3×, the Manager is told to change the strategy CLASS (e.g. 3× timeout → checkpoint-resume; 3× resume_violation → spell out the exact load/print/save lines in the task), not the parameter value.
-- **Manager's Playbook** (legacy, alongside skills) — regex recipe (algo/steps/device) per solved env.
-- **Tester's Pattern Library** — rule-based `diagnose_common_issues()` catches known failures BEFORE LLM analysis. Findings appended to stderr as `=== AUTOMATED DIAGNOSTICS ===`.
+- **Tester's Pattern Library** — rule-based `diagnose_common_issues(..., phase=...)` catches known failures BEFORE LLM analysis (phase-aware: the "no RESULT / no MODEL_SAVED" rules are skipped in the demo phase, where a correct script legitimately neither trains nor saves). Findings appended to stderr as `=== AUTOMATED DIAGNOSTICS ===`.
+- *(Removed) Manager's Playbook* — the legacy regex recipe (algo/steps/device) was fully superseded by the SKILL substrate (`_skill_from_winning_code` distils a richer, persistent, Coder-injected procedural skill on env-solve) and deleted.
 - **Failsafe** — progress-aware: the consecutive-failure counter RESETS on a new best metric, so an env that keeps improving is never skipped; only a stuck (non-improving) env is abandoned after N (`failsafe.skip_after_consecutive_failures`).
 
 ### Key Files
@@ -47,7 +47,8 @@ Phase transitions happen INSIDE Manager's `__call__` — Manager updates the pha
 - `src/agents/base.py` — Base agent with LLM, history, opinions, model switching
 - `src/config_loader.py` — Pydantic config validation (env `metric: reward|success_rate`, `skills_dir`, `initial_skills`)
 - `src/skills/skill_store.py` — SKILL substrate (procedural, pinned, persistent, semantic-search-ready)
-- `src/utils/code_lint.py` — deterministic pre-Docker lint (env name / imports / syntax)
+- `src/utils/code_lint.py` — deterministic pre-Docker lint (env name / imports / syntax / SB3 kwargs / resume contract)
+- `src/utils/result_parser.py` — `parse_result_line()`: the single canonical parser for the Coder's `RESULT:` line (Tester + Reviewer share it; no drifting copies)
 - `src/utils/conversation_logger.py` — GitHub-friendly markdown logging (incl. `log_video`)
 - `scripts/live_view.py` — Read-only auto-refresh browser view of conversation.md (presentations)
 - `main.py` — Entry point

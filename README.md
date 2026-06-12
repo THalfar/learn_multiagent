@@ -63,8 +63,8 @@ After all three phases pass, the team advances to the next environment.
 - **Conversation logging** — Full GitHub-flavored markdown logs of every iteration, shareable and readable, with demo videos embedded inline
 - **Live view** — Optional read-only browser dashboard that re-renders the conversation log in real time (great for presentations) — see `scripts/live_view.py`
 - **Docker sandbox** — Isolated GPU execution with network disabled and code mounted read-only
-- **Manager's Playbook** — Learned recipes from solved environments inform future tasks
-- **Automated diagnostics** — Rule-based error detection catches common failures before LLM analysis
+- **Procedural skills** — On env-solve the Manager distils a verified, persistent procedural skill (algo + policy + HER + checkpoint + metric) into the SkillStore, injected into the next env's Coder (this replaced the old regex "playbook")
+- **Automated diagnostics** — Rule-based, phase-aware error detection catches common failures before LLM analysis
 - **Failsafe skip** — Automatically advances to next environment after too many consecutive failures
 
 ---
@@ -216,10 +216,12 @@ environment_progression:
     success_threshold: 475
     execution_timeout: 300    # seconds
     device: "cpu"             # cpu | gpu | auto
-  - name: "Pendulum-v1"
-    success_threshold: -300
-    execution_timeout: 300
-    device: "cpu"
+  - name: "PandaPush-v3"
+    success_threshold: 0.7
+    metric: "success_rate"    # reward | success_rate (goal-conditioned envs use the is_success fraction in [0,1])
+    execution_timeout: 1800
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]  # optional env-family tags for SKILL retrieval
 ```
 
 ### Agent models
