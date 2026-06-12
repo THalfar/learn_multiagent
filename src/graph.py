@@ -66,6 +66,11 @@ def create_graph(config: Config):
         # C2: checkpoint-resume enforcement (Tester verifies; Reviewer gates on it)
         resume_required: bool  # True when optimization ran with an existing checkpoint
         resume_ok: bool  # True when stdout proved RESUMED: buffer_transitions=N (N>0)
+        # Goal A: demo-reward gate - the demo phase's measured metric must ALSO clear the
+        # threshold (videos alone aren't proof). demo_below_threshold drives a demo->
+        # optimization regression so the checkpoint keeps training instead of looping.
+        demo_reward: Any  # demo eval metric (None = no measurement / crash / no RESULT line)
+        demo_below_threshold: bool  # demo measured the metric below threshold -> regress
 
     def should_continue(state: AgentState) -> str:
         # Check if manager said DONE

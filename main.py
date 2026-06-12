@@ -84,6 +84,9 @@ if __name__ == "__main__":
         "measured_sps": None,
         "resume_required": False,
         "resume_ok": True,
+        # Goal A: demo-reward gate (None = no demo measurement yet)
+        "demo_reward": None,
+        "demo_below_threshold": False,
     }
     
     # Print run start banner

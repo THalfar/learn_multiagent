@@ -101,6 +101,9 @@ class Manager(BaseAgent):
             "measured_sps": None,
             "resume_required": False,
             "resume_ok": True,
+            # Goal A: fresh demo-reward gate for the new env (all 3 switch paths inherit this)
+            "demo_reward": None,
+            "demo_below_threshold": False,
         }
 
     def _generate_environment_switch_report(self, current_env, next_env, solved_environments, env_progression, state):
@@ -293,6 +296,28 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         # MONIVAIHEINEN TREENI: Tarkista ja vaihda vaihe kun approved=True
         current_phase = state.get("current_phase", "validation")
 
+        # Goal A: DEMO-REWARD REGRESSION. The reviewer's demo gate measured the demo metric
+        # BELOW threshold and forced a REJECT (so the approved-branch below won't fire). The
+        # video looked fine but the policy isn't there yet -> regress to OPTIMIZATION so the
+        # checkpoint keeps training. best_model_path is deliberately PRESERVED here: it re-arms
+        # the resume contract (Coder lint + Tester gate) so the next chunk resumes + accumulates.
+        # Clear the demo flags so we don't loop. The final result dict propagates these resets.
+        if current_phase == "demo" and state.get("demo_below_threshold", False):
+            _demo_val = state.get("demo_reward")
+            print(f"\n[bold yellow]{'='*60}[/bold yellow]")
+            print(f"[bold yellow]↩️  DEMO GATE: demo eval {_demo_val} < threshold[/bold yellow]")
+            print(f"[bold cyan]➡️  Regressing to OPTIMIZATION (checkpoint preserved, keep training)[/bold cyan]")
+            print(f"[bold yellow]{'='*60}[/bold yellow]\n")
+            logger = state.get("conversation_logger")
+            if logger:
+                _env_name = env_progression[current_env_index].name if env_progression and current_env_index < len(env_progression) else "unknown"
+                logger.log_phase_transition("demo", "optimization", _env_name)
+            current_phase = "optimization"
+            state = {**state, "current_phase": "optimization", "approved": False,
+                     "demo_reward": None, "demo_below_threshold": False,
+                     "review_feedback": f"DEMO GATE: demo eval {_demo_val} < threshold - continue checkpoint-resume training.",
+                     "review_suggestions": ""}
+
         if state.get("approved", False) and env_progression:
             # Vaihelogiikka: validation -> optimization -> demo -> seuraava env
             # Instead of returning early, update phase and CONTINUE to generate a new task
@@ -322,6 +347,8 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                     logger.log_phase_transition("optimization", "demo", _env_name)
                 current_phase = "demo"
                 state = {**state, "current_phase": "demo", "approved": False, "iteration": 0,
+                         # Goal A: enter demo with a CLEAN gate (no stale measurement)
+                         "demo_reward": None, "demo_below_threshold": False,
                          "review_feedback": "PHASE TRANSITION: Optimization complete. Now record video of trained agent.",
                          "review_suggestions": ""}
             elif current_phase == "demo":
@@ -1217,6 +1244,10 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "solved_environments": solved_environments,  # Preserve solved environments
             "current_phase": state.get("current_phase", "validation"),  # Preserve phase (may have changed)
             "approved": state.get("approved", False),  # Preserve approval state (reset on phase change)
+            # Goal A: propagate the demo-reward gate flags. On a demo->optimization regression
+            # (or optimization->demo entry) these were reset above; otherwise they pass through.
+            "demo_reward": state.get("demo_reward"),
+            "demo_below_threshold": state.get("demo_below_threshold", False),
         }
 
         # Merge history update and opinion update into result
