@@ -40,6 +40,35 @@ check("coder prompt has RESUMED contract", "RESUMED: buffer_transitions" in cod_
 check("coder has a chat_template", bool(cod_p.get("chat_template")))
 check("coder sees RAW EXECUTION OUTPUT", "RAW EXECUTION OUTPUT" in cod_p["system"])
 
+# ── 1b. NO-RECIPE GUARD: duo prompts must teach METHOD + FACTS, never env recipes ──
+# (General-intelligence principle: env->algorithm tables, step-count tables and ready-made
+# solutions like the HER kwargs gave the answer away in every run - including "blind" ones.
+# Recipes belong ONLY in the SkillStore, seeded explicitly per experiment or EARNED by runs.)
+import re as _re
+
+_duo_text = open("config/duo_prompts.yaml", encoding="utf-8").read()
+_RECIPE_TOKENS = [
+    # env names (any mention in prompts = leaked benchmark knowledge)
+    "CartPole", "Pendulum", "MountainCar", "LunarLander", "BipedalWalker", "Acrobot",
+    "PandaReach", "PandaPush", "PandaPickAndPlace", "aviary",
+    # ready-made solution markers
+    "HerReplayBuffer", "MultiInputPolicy", "n_sampled_goal", "150k",
+    # algorithm names = steering; ALGO placeholder is the allowed generic form
+    "SAC", "PPO", "DQN", "TD3", "A2C", "DDPG",
+]
+_leaks = [t for t in _RECIPE_TOKENS if _re.search(r"\b" + _re.escape(t), _duo_text)]
+check(f"duo prompts are recipe-free (leaks: {_leaks or 'none'})", not _leaks)
+check("coder prompt demands discovery", "observation_space" in cod_p["system"])
+check("director demands discovery printout", "observation_space" in rev_p["system"])
+check("director skill example is method-shaped", "Inspect the env before choosing budgets" in rev_p["system"])
+
+# initial_validation_task must also be algorithm-free + demand discovery
+from src.agents import env_transitions as _et
+_task0 = _et.initial_validation_task(cfg.environment_progression[0])
+check("initial validation task is algorithm-free",
+      not _re.search(r"\b(SAC|PPO|DQN|TD3|A2C|DDPG)\b", _task0))
+check("initial validation task demands discovery", "observation_space" in _task0)
+
 # ── 2. Both graphs compile (duo new; quad regression guard) ──
 from src.duo_graph import create_duo_graph
 from src.graph import create_graph

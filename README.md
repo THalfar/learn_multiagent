@@ -56,7 +56,8 @@ After all three phases pass (demo metric included), the team advances to the nex
 
 ## Key Features
 
-- **Environment progression** — Agents solve increasingly difficult Gymnasium environments (CartPole -> Pendulum -> MountainCar -> ...)
+- **Environment progression** — Agents solve increasingly difficult Gymnasium environments (CartPole -> Pendulum -> MountainCar -> ..., PyBullet robot arms, quadrotor drones)
+- **Recipe-free prompts (duo)** — `config/duo_prompts.yaml` contains NO env→algorithm tables, no step-count tables, no ready-made solutions: the prompts teach *method* (inspect the env's spaces/spec first, measure, escalate, inscribe earned skills) and harness *facts* only. Environment-specific knowledge lives exclusively in the SkillStore — seeded explicitly for capability runs, earned from scratch in blind runs. A smoke-test guard keeps recipes from leaking back in.
 - **Multi-phase training** — Fast validation before committing to long optimization runs
 - **SKILL memory** — Procedural skills (when-to-use / procedure / pitfalls / verification), not flat values, are injected into the **Coder** and the **Manager**, and persist to disk across runs. SHODAN adds/improves/verifies/removes them; `verified` skills are pinned AND take precedence over any other feedback — including SHODAN's own directives. Replaces the old flat "Divine Codex".
 - **Pre-Docker lint** — A fast deterministic check (env name / imports / syntax / **SB3 kwarg validation against curated signatures** / the checkpoint-resume contract) gives the Coder instant feedback *before* the expensive Docker run — a "pre-Tester" that catches the #1 time-wasters in milliseconds (it does not replace the Tester's semantic diagnosis).

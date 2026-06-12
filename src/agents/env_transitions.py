@@ -20,15 +20,18 @@ def initial_validation_task(next_env) -> str:
     empty/stale task (the stale-task race: after a switch the Coder coded the NEW env
     while manager_guidance still described the OLD env's task -> the Reviewer rejected
     correct work as 'mismatching intent', one wasted iteration per switch)."""
-    action_type = getattr(next_env, "action_type", "")
-    algo = "SAC" if action_type == "continuous" else "PPO"
     is_goal = getattr(next_env, "metric", "reward") == "success_rate"
     metric_note = (" The env is goal-conditioned: report success_rate (the is_success "
                    "fraction over eval episodes) in the mean_reward slot." if is_goal else "")
-    return (f"Write a minimal VALIDATION script for {next_env.name}: create the env with "
-            f"gym.make('{next_env.name}'), train a fresh {algo} model briefly "
-            f"(1000-2000 timesteps, n_envs=1, default hyperparameters), evaluate, and print "
-            f"exactly 'RESULT: mean_reward=X, std_reward=Y, episodes=Z'.{metric_note} "
+    # Deliberately algorithm-free: choosing the algorithm IS the intelligence being tested.
+    # The discovery printout gives the team (and the Director) the evidence to choose from.
+    return (f"Write a minimal VALIDATION script for {next_env.name}. First DISCOVER: create "
+            f"the env with gym.make('{next_env.name}') and print its observation_space, "
+            f"action_space, env.spec.max_episode_steps, env.spec.reward_threshold, and the "
+            f"info dict from one env.step(). Then train a fresh model briefly with an "
+            f"algorithm YOU choose based on those observations (1000-2000 timesteps, n_envs=1, "
+            f"default hyperparameters), evaluate, and print exactly "
+            f"'RESULT: mean_reward=X, std_reward=Y, episodes=Z'.{metric_note} "
             f"Save the model at the end. Keep the script minimal so it finishes well "
             f"within the validation timeout.")
 
@@ -50,6 +53,12 @@ def env_switch_reset(next_env_index: int, task: str, video_dir: str) -> dict:
         "tasks": [task],
         "code": "",
         "test_results": "",
+        # The duo Coder renders execution_stdout/stderr verbatim as "PREVIOUS RUN - RAW EXECUTION
+        # OUTPUT (ground truth)". Without clearing them, the NEW env's first Coder prompt embeds the
+        # OLD env's output (e.g. a passing demo's success_rate / MODEL_LOADED lines), telling the
+        # model its previous run on THIS env already succeeded - the stale-context bug this reset exists to prevent.
+        "execution_stdout": "",
+        "execution_stderr": "",
         "review_feedback": "",
         "review_suggestions": "",
         "current_task": task,
@@ -89,7 +98,7 @@ def skill_from_winning_code(code: str, env_name: str, env_tags: Optional[list] =
     if uses_her:
         proc.append("replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal':4,'goal_selection_strategy':'future'}")
     proc.append("read max_episode_steps from env.spec and set learning_starts >= that value")
-    proc.append("each optimization iteration resume from the checkpoint (SAC.load + load_replay_buffer, learn one ~150k chunk, then save model + replay buffer)")
+    proc.append(f"each optimization iteration resume from the checkpoint ({algo}.load + load_replay_buffer, learn one wall-clock-sized chunk computed from measured steps/s, then save model + replay buffer)")
     if is_goal:
         proc.append("report success_rate (the is_success fraction), never the raw sparse reward")
     return {
@@ -97,8 +106,9 @@ def skill_from_winning_code(code: str, env_name: str, env_tags: Optional[list] =
         "when_to_use": (f"A goal-conditioned / sparse-reward env like {env_name} (Dict obs with desired_goal)."
                         if is_goal else f"An env like {env_name}."),
         "procedure": "; ".join(proc) + ".",
-        "pitfalls": ("Plain MlpPolicy or no-HER cannot solve goal envs; never pass reset_num_timesteps=False "
-                     "(breaks termination on a reloaded model); 30k steps is starvation - use ~150k chunks and accumulate."
+        "pitfalls": ((("Plain MlpPolicy or no-HER did NOT work here; " if uses_her else "")
+                      + "never pass reset_num_timesteps=False (breaks termination on a reloaded model); "
+                      "starving the chunk stalls progress - size it from measured steps/s and accumulate.")
                      if is_goal else "Commit to one algorithm so checkpoint-resume accumulates."),
         "verification": ("RESULT line prints success_rate in [0,1] >= the env threshold."
                          if is_goal else "RESULT mean_reward >= the env threshold."),

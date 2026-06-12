@@ -30,6 +30,7 @@ from .tester import (
     is_safe_code,
     run_diagnostic_in_container,
     compute_execution_timeout,
+    strip_invalid_timeout_kwarg,
     DOCKER_SANDBOX_ENABLED,
     Tester,
 )
@@ -58,16 +59,22 @@ class Executor:
         iteration = state.get("iteration", 0)
         logger = state.get("conversation_logger")
 
-        # Strip the invalid model.learn(timeout=...) kwarg LLMs sometimes emit.
-        code = re.sub(r'timeout\s*=\s*[^,\)]+(?=\s*[,\)]|$)', '', code, flags=re.IGNORECASE)
+        # Strip the invalid model.learn(timeout=...) kwarg LLMs sometimes emit (shared,
+        # newline-safe helper; the previous inline regex matched across lines and could delete
+        # whole statements around a plain `timeout = N` assignment).
+        code = strip_invalid_timeout_kwarg(code)
+        # The early-return paths below run no optimization chunk, so clear any resume verdict left
+        # in state from a PREVIOUS iteration - otherwise the Director's resume gate fires on stale
+        # flags and misattributes this iteration's (lint/no-code) failure to the resume contract.
+        _no_resume = {"resume_required": False, "resume_ok": True}
 
         if not code:
             return {"test_results": "No code to test", "execution_stdout": "",
-                    "execution_stderr": "", "diagnosis": "No code produced", **_demo_none}
+                    "execution_stderr": "", "diagnosis": "No code produced", **_no_resume, **_demo_none}
         if not is_safe_code(code):
             return {"test_results": "ERROR: Dangerous code detected", "execution_stdout": "",
                     "execution_stderr": "Dangerous code detected, execution blocked",
-                    "diagnosis": "Dangerous code blocked", **_demo_none}
+                    "diagnosis": "Dangerous code blocked", **_no_resume, **_demo_none}
 
         env_progression = self.config.environment_progression
         current_env_index = state.get("current_env_index", 0)
@@ -97,6 +104,7 @@ class Executor:
                     "test_results": "LINT FAILED (Docker skipped - fix these structural errors):\n" + fb,
                     "execution_stdout": "", "execution_stderr": "LINT FAILED:\n" + fb,
                     "diagnosis": ("LINT FAILED: " + fb)[:300],
+                    **_no_resume,  # this iteration ran no chunk -> clear any stale resume verdict
                 }
 
         # ── Resume pre-gate (optimization): a checkpoint must be resumed, not retrained fresh ──
@@ -117,7 +125,7 @@ class Executor:
                     return {
                         "test_results": ("RESUME CONTRACT FAILED (Docker skipped). A checkpoint exists at "
                                          "/workspace/output/best_model - the optimization script MUST resume it "
-                                         "(SAC.load + load_replay_buffer + RESUMED print + save both) so training "
+                                         "(ALGO.load + load_replay_buffer + RESUMED print + save both) so training "
                                          "accumulates:\n" + _fb),
                         "execution_stdout": "", "execution_stderr": "RESUME CONTRACT FAILED:\n" + _fb,
                         "diagnosis": ("RESUME CONTRACT FAILED: " + "; ".join(_violations))[:400],
@@ -243,9 +251,14 @@ class Executor:
         }
 
         # ── Cumulative tracking (deterministic; makes (non-)accumulation visible) ──
+        # Only count steps that genuinely accumulated: skip resume-violated runs (resume_required
+        # but resume_ok=False) because those trained fresh from scratch — counting them would
+        # inflate total_env_steps/metric_history and could reset consecutive_failures via the
+        # Director's improved check even though no real progress was made on the checkpoint.
         _steps_m = (re.search(r"total_timesteps\s*=\s*(\d+)", code)
                     or re.search(r"\.learn\(\s*(\d+)", code))
-        if _val is not None:
+        _accumulation_valid = not resume_required or resume_ok
+        if _val is not None and _accumulation_valid:
             if current_phase == "optimization":
                 result_dict["metric_history"] = (state.get("metric_history") or []) + [_val]
             if _steps_m:
@@ -256,13 +269,18 @@ class Executor:
                     result_dict["measured_sps"] = _sps
                     print(f"[dim]📈 Cumulative: {result_dict['total_env_steps']:,} steps this env | ~{_sps} steps/s[/dim]")
 
-        # ── After optimization: locate the saved model for the demo phase ──
-        if current_phase == "optimization":
+        # ── Locate the saved model (validation OR optimization) ──
+        # Validation also saves a model (initial_validation_task: "Save the model at the end"),
+        # so recording best_model_path here keeps the Director's checkpoint signal (it reads
+        # best_model_path) in sync with this Executor's resume pre-gate (which scans the
+        # filesystem). Otherwise the validation .zip makes the gate DEMAND a resume while the
+        # Director still tells the Coder to "train fresh" - a guaranteed wasted iteration.
+        if current_phase in ("validation", "optimization"):
             mp = Tester._find_saved_model(video_dir)
             if mp:
                 result_dict["best_model_path"] = mp
                 print(f"[bold green]💾 MODEL FOUND: {mp}[/bold green]")
-            else:
+            elif current_phase == "optimization":
                 print(f"[yellow]⚠️  No saved model (.zip) found in {video_dir}[/yellow]")
 
         self._log(logger, iteration, test_results, stdout, stderr, execution_duration)

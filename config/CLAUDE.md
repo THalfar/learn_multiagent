@@ -51,10 +51,21 @@ Special placeholders in coder's prompt:
 ### prompts.yaml — Original detailed prompts
 Larger, more constrained prompts. Same structure as opus_prompts.yaml but without `{shodan_rules}` placeholders — `BaseAgent.render_template()` renders an absent optional placeholder as empty, so no per-call try/except KeyError fallback is needed.
 
-### duo_prompts.yaml — Duo pipeline prompts
+### duo_prompts.yaml — Duo pipeline prompts (RECIPE-FREE by design)
 Only two sections (the duo pipeline has no Manager/Tester nodes):
 - `reviewer:` — the **Director** (SHODAN). "There is no Manager and no Tester. YOU are strategist, judge, and taskmaster." Carries the four-gate awareness, the resume contract, success_rate semantics, the skill_ops contract + THE PIN BINDS YOU TOO, and a JSON `task_template` contract of `{{approved, feedback, next_task, skill_ops, my_opinion}}` (no `tester_instruction`). Rendered via `render_template` (format_map), so literal braces are doubled. Inherits `environment_switch_report_template`.
 - `coder:` — the opus coder + a "RAW EXECUTION OUTPUT" paragraph (fix what the container actually printed) + a short `chat_template` (team chatter). Its `system` is concatenated raw (braces single); its `task_template` is formatted (braces doubled).
+
+**The no-recipe principle** ("general intelligence" experiments, robot + drone): these prompts
+contain ZERO environment names, algorithm names, or step-count tables — no env→algo cheat-sheet,
+no "DQN crashes on continuous" style API steering, and the skill_ops EXAMPLE is method-shaped
+(the old HER example literally handed the panda answer to every run, including "blind" ones).
+What remains is METHOD (discovery printout → measure → escalate strategy class → inscribe earned
+skills) and harness FACTS (container inventory, RESULT/RESUMED/MODEL_SAVED contracts, stdout
+budget). Env-specific knowledge belongs ONLY in the SkillStore (`initial_skills` for seeded runs;
+earned + distilled otherwise). `scripts/smoke_test_duo.py` has a **no-recipe guard** that fails
+if any forbidden token (env names, SAC/PPO/DQN/..., HerReplayBuffer, MultiInputPolicy, …) leaks
+back into this file — and `env_transitions.initial_validation_task` is likewise algorithm-free.
 
 ## Conventions
 - YAML uses `{{` for literal braces (Python `.format()` escaping)

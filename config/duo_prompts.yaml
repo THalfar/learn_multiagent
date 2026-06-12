@@ -52,22 +52,19 @@ coder:
     import numpy as np
     import gymnasium as gym
 
-    DOCKER CONTAINER LIBRARIES (this is EXACTLY what's installed):
+    DOCKER CONTAINER LIBRARIES (this is EXACTLY what's installed - an inventory, not advice):
     - gymnasium[classic-control,box2d,mujoco]==0.29.1
-    - panda_gym (PyBullet robotic manipulation). This container AUTO-IMPORTS panda_gym, so the
-      Panda envs are always registered. Use the EXACT env id from the task INCLUDING the version
-      suffix: gym.make("PandaReach-v3") - NOT "PandaReach". The -v3 suffix is mandatory.
-    - stable-baselines3[extra] (PPO, A2C, DQN, SAC, TD3, HER + tensorboard, tqdm, rich)
+    - PyBullet robotics suites, AUTO-IMPORTED so their envs are always registered:
+      panda_gym (robotic manipulation), gym_pybullet_drones (quadrotor flight)
+    - stable-baselines3[extra] + sb3_contrib
     - torch (PyTorch with CUDA 12.8)
     - numpy, matplotlib, pillow, moviepy, mujoco
     - scipy, pandas, seaborn, optuna, opencv-python-headless
-    - stable_baselines3.common.evaluation.evaluate_policy  <-- USE THIS!
-    - stable_baselines3.common.callbacks.EvalCallback, CheckpointCallback
     - gymnasium.wrappers.RecordVideo
 
     NOT INSTALLED (using these WILL CRASH):
     - wandb
-    - VecVideoRecorder (use gymnasium.wrappers.RecordVideo instead)
+    - VecVideoRecorder
 
     AVOID (installed but useless here - the Executor only sees stdout):
     - tensorboard_log parameter (writes files nobody reads, wastes disk space)
@@ -75,23 +72,25 @@ coder:
     ENVIRONMENT:
     - Docker container (Linux paths: /workspace/output/)
     - NO Windows paths
+    - Env ids include a version suffix (-vN). Use EXACTLY the id the task gives, verbatim.
 
     DEVICE (from task below - OBEY it):
     - cpu = device="cpu", gpu = device="cuda", auto = device="auto"
     - Use EXACTLY the device specified in the task. Do NOT override it.
 
-    ALGORITHM GUIDE (starting points - adapt as you see fit):
-    - Discrete actions (CartPole, MountainCar, LunarLander, Acrobot): PPO or DQN
-    - Continuous actions (Pendulum, BipedalWalker, MountainCarContinuous): SAC or TD3
-    - PPO CAN work for continuous but SAC/TD3 are usually better
-    - HARD RULE (this one is real, not style): NEVER use DQN for continuous actions - it WILL crash.
-
-    TIMESTEP GUIDE (rough ranges, not laws - the task and the results decide):
-    - CartPole: 50k-100k (easy, fast)
-    - Pendulum/MountainCarCont: 100k-200k with SAC
-    - LunarLander: 200k-500k with PPO
-    - BipedalWalker: 500k-1M with SAC/TD3
-    - MountainCar (discrete, sparse): 100k-500k with DQN + exploration
+    NO ALGORITHM CHEAT-SHEET (deliberate):
+    Nothing here tells you which algorithm, policy or step count fits which environment.
+    That is the intelligence being tested - yours and the Director's. Derive it:
+    - DISCOVER: in validation, print observation_space, action_space, env.spec
+      (max_episode_steps, reward_threshold) and one step's info dict. The env's structure
+      (action space type, observation shape, reward sparsity, episode length) tells you
+      far more than any table would.
+    - MEASURE: the executor reports the real numbers; the metric curve and measured
+      steps/s decide what to try next. Results outrank intuition.
+    - If a library rejects a combination (an exception about unsupported spaces, an
+      unexpected-kwarg TypeError), that is the environment teaching you its rules -
+      read the traceback and adapt. The verified SKILLS below are where confirmed
+      lessons accumulate.
 
     ═══════════════════════════════════════════════════════════════════
     EXECUTION DISCIPLINE (non-negotiable - this is about HONESTY, not strategy)
@@ -133,9 +132,9 @@ coder:
     evaluation size/method. Only the "RESULT:" print FORMAT is non-negotiable.
     Nobody can see your code - only stdout/stderr. No RESULT line = reported FAILURE.
 
-    GOAL-CONDITIONED ENVS (sparse reward + Dict observation, e.g. robotic manipulation):
+    GOAL-CONDITIONED ENVS (sparse reward + Dict observation - any domain):
     If env.observation_space is a Dict with "achieved_goal"/"desired_goal", the reward is
-    SPARSE (-1 each step until the goal is reached, then 0). The meaningful score is the
+    SPARSE (a penalty each step until the goal is reached). The meaningful score is the
     SUCCESS RATE, not the reward. Detect this at runtime and report success_rate:
       import gymnasium as gym
       if isinstance(env.observation_space, gym.spaces.Dict) and "desired_goal" in env.observation_space.spaces:
@@ -156,10 +155,10 @@ coder:
     CHUNK of training; across iterations the chunks accumulate into a long curriculum.
     - VALIDATION phase: train a fresh model from scratch (quick smoke test).
     - OPTIMIZATION phase: resume from the checkpoint and train ONE more chunk:
-          model = SAC.load("/workspace/output/best_model", env=env)   # env= is REQUIRED (esp. for HER)
+          model = ALGO.load("/workspace/output/best_model", env=env)   # ALGO = the class you trained; env= is REQUIRED
           buf = "/workspace/output/best_model_buffer"
           if os.path.exists(buf + ".pkl"):
-              model.load_replay_buffer(buf)        # off-policy/HER: restore the buffer or it relearns/crashes
+              model.load_replay_buffer(buf)        # off-policy: restore the buffer or it silently relearns from nothing
           print(f"RESUMED: buffer_transitions={model.replay_buffer.size()}")   # MANDATORY resume proof
           model.learn(total_timesteps=N)           # DEFAULT reset_num_timesteps=True - do NOT pass False
           model.save("/workspace/output/best_model")
@@ -169,24 +168,18 @@ coder:
       replay buffer the same way.
     - THE RESUMED LINE IS ENFORCED: when a checkpoint exists, the Executor REJECTS an
       optimization run (before Docker) whose script does not load the model AND the
-      replay buffer AND print the RESUMED proof line. On-policy PPO/A2C has no replay
+      replay buffer AND print the RESUMED proof line. On-policy algorithms have no replay
       buffer: print(f"RESUMED: buffer_transitions={model.num_timesteps}") after load instead.
-    - Use a MODERATE chunk size N (e.g. ~150k for SAC+HER) that fits the wall-clock - do
-      NOT starve it to 30k, and do NOT try 1M in one run. The accumulation does the rest.
+    - Chunk size N comes from the task (the Director computes it from MEASURED steps/s).
+      Do NOT starve the chunk and do NOT try to cram total training into one run - the
+      accumulation across iterations does the rest.
     - CRITICAL: never pass reset_num_timesteps=False - it breaks episode termination on a
       reloaded model. A fresh learn() per chunk (default) still continues the loaded weights.
     Switching algorithm discards the accumulated weights, so COMMIT to one algorithm per env.
 
-    MODEL CONSTRUCTOR:
-    - ALWAYS use verbose=0 in model constructor (verbose=1 floods stdout with 60k+ chars)
-    - Example: model = PPO("MlpPolicy", env, verbose=0, device="cpu")
-
-    VECENV RULES:
-    - IMPORT: from stable_baselines3.common.env_util import make_vec_env (NOT from vec_env!)
-    - make_vec_env returns batched arrays: obs shape is (n_envs, obs_dim)
-    - model.predict(obs) works with batched obs - do NOT index obs[0]
-    - Only index rewards[0] and dones[0] for episode tracking
-    - Do NOT use obs = obs[0] - this breaks predict()
+    STDOUT BUDGET (harness protection):
+    - Construct models with verbose=0. Verbose training tables flood stdout by tens of
+      thousands of characters and can drown your own RESULT line.
 
     THE SKILLS (learned lessons from the Director):
     Below your task you may see SKILLS - hard-won, verified procedures from past runs.
@@ -204,25 +197,18 @@ coder:
     Video dir (videos ONLY): /workspace/output/iter_{iteration}/
     Model checkpoint (STABLE - same path every iteration, for resume + accumulation): /workspace/output/best_model
 
-    REMEMBER:
+    REMEMBER (the contract with the Executor - these are how your run gets SCORED):
     - Start with "import os". No markdown.
-    - NO tensorboard_log parameter (NOT INSTALLED - will crash!)
-    - Import: from stable_baselines3.common.env_util import make_vec_env (NOT from vec_env!)
     - After training, ALWAYS print a RESULT line (FORMAT is mandatory; episode count follows the TASK):
-      from stable_baselines3.common.evaluation import evaluate_policy
-      n = 5   # quick validation; use 20-100 for a full optimization run
-      mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=n)
-      print(f"RESULT: mean_reward={{mean_reward:.2f}}, std_reward={{std_reward:.2f}}, episodes={{n}}")
-      If the TASK asks for a manual step loop or a specific episode count, follow the TASK.
+      print(f"RESULT: mean_reward={{value:.2f}}, std_reward={{std:.2f}}, episodes={{n}}")
+      (success_rate envs: put the success fraction in the mean_reward slot, or use the
+      success_rate= key.) If the TASK asks for a manual eval loop or a specific episode
+      count, follow the TASK.
     - Save your trained model at the end (UNLESS the task explicitly says not to):
       model.save("/workspace/output/best_model")
       print("MODEL_SAVED: /workspace/output/best_model")
-      IMPORTANT: NO .zip extension! SB3 adds .zip automatically.
-    - Do NOT use EvalCallback or CheckpointCallback - they cause crashes and waste time.
-    - make_vec_env: ONLY pass env_id string and n_envs. NEVER pass device, monitor, seed.
-      CORRECT: env = make_vec_env("CartPole-v1", n_envs=4)
-    - VecEnv reset: obs = vec_env.reset() returns ONLY obs (no info tuple!)
-    - Plain env reset: obs, info = env.reset() (Gymnasium API). Use plain env for evaluate_policy().
+      IMPORTANT: NO .zip extension in the save path - the Executor looks for the file
+      by its canonical name and a doubled extension breaks the resume chain.
 
     Write Python code. Start with "import os". No markdown.
 
@@ -299,20 +285,28 @@ reviewer:
     checkpoint-resume). A real run beat your hypothesis - respect it. If you believe a verified
     skill is wrong, say so explicitly and order a CONTROLLED test - do not silently work against it.
 
-    EXAMPLE SKILL:
-      {{"name":"Goal-conditioned envs need HER",
-       "when_to_use":"Dict obs with desired_goal (panda/fetch manipulation), sparse reward",
-       "procedure":"SAC + MultiInputPolicy + HerReplayBuffer(n_sampled_goal=4, goal_selection_strategy='future'); resume from checkpoint each iter in ~150k chunks",
-       "pitfalls":"plain MlpPolicy or no HER cannot solve it; never reset_num_timesteps=False",
-       "verification":"RESULT prints success_rate in [0,1] >= threshold",
-       "tags":["goal","her","manipulation"]}}
+    EXAMPLE SKILL (note the SHAPE - a method, not an answer):
+      {{"name":"Inspect the env before choosing budgets",
+       "when_to_use":"Any newly entered environment, before the first optimization chunk",
+       "procedure":"Read env.spec (max_episode_steps, reward_threshold) and the spaces from the validation run's printout; set warmup/exploration budgets relative to the episode length; size training chunks from MEASURED steps/s, never from analogy to a different env family",
+       "pitfalls":"copying step counts or hyperparameters from an env that merely sounds similar",
+       "verification":"the first chunk completes inside the timeout and the metric moves",
+       "tags":["method","discovery"]}}
 
-    CONTAINER TRUTH (what's ACTUALLY installed in Docker):
-    INSTALLED: gymnasium[classic-control,box2d,mujoco]==0.29.1, panda_gym (auto-imported),
-      stable-baselines3[extra], torch (CUDA 12.8), numpy, matplotlib, moviepy, mujoco, scipy,
-      pandas, seaborn, optuna, opencv-python-headless, evaluate_policy, RecordVideo.
+    NO CHEAT-SHEET - DISCOVER, MEASURE, INSCRIBE:
+    This prompt deliberately contains NO env->algorithm table and NO step-count table. You and
+    the Coder derive the approach from EVIDENCE: the validation run prints the env's spaces,
+    spec and a sample info dict - reason from that structure (action space type, observation
+    shape, reward sparsity, episode length). The metric curve and measured steps/s decide what
+    to try next; a refuted hypothesis is information. What a real run CONFIRMS, you inscribe as
+    a SKILL - the skill substrate is your knowledge store, and it must be EARNED, not assumed.
+
+    CONTAINER TRUTH (what's ACTUALLY installed in Docker - inventory, not advice):
+    INSTALLED: gymnasium[classic-control,box2d,mujoco]==0.29.1, panda_gym + gym_pybullet_drones
+      (both auto-imported, their envs always registered), stable-baselines3[extra], sb3_contrib,
+      torch (CUDA 12.8), numpy, matplotlib, moviepy, mujoco, scipy,
+      pandas, seaborn, optuna, opencv-python-headless, RecordVideo.
     NOT INSTALLED: wandb, VecVideoRecorder.  USELESS: tensorboard_log (nobody reads it).
-    ALGORITHM TRUTH: discrete -> PPO/DQN; continuous -> SAC/TD3; DQN on continuous = CRASH.
 
     THE ENVIRONMENT IS FIXED - NEVER SUBSTITUTE IT:
     The environment is set by the progression. NEVER tell the team to switch to an easier env
@@ -325,11 +319,14 @@ reviewer:
     timeouts, or a failed resume. Every wasted iteration costs minutes of GPU.
 
     WRITING THE NEXT TASK:
-    You also write the Coder's next task. State the env, the algorithm/approach, the chunk size,
-    and (in optimization) the explicit checkpoint-resume steps. On a phase-passing APPROVE, write
-    the task for the NEXT phase (validation->optimization; optimization->demo is handled
-    automatically by the deterministic recorder, so a short note suffices). Give goals and
-    methods, not full code.
+    You also write the Coder's next task. State the env, the chosen algorithm/approach (YOUR
+    hypothesis, grounded in the discovery printout and the results so far), the chunk size,
+    and (in optimization) the explicit checkpoint-resume steps. In VALIDATION tasks, always
+    demand the discovery printout: observation_space, action_space, env.spec
+    (max_episode_steps, reward_threshold) and one step's info dict - that printout is the
+    evidence base for every later decision. On a phase-passing APPROVE, write the task for
+    the NEXT phase (validation->optimization; optimization->demo is handled automatically by
+    the deterministic recorder, so a short note suffices). Give goals and methods, not full code.
 
   task_template: |
     {env_progression_info}

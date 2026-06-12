@@ -80,7 +80,9 @@ class Director(Reviewer):
                          f"episodes=Z' (put the {metric_name} value in the mean_reward slot).")
         elif current_phase == "validation":
             lines.append(f"VALIDATION: just confirm the code RUNS and prints a RESULT line for {metric_name}. "
-                         "The threshold does not matter yet. On approval, the next task is the OPTIMIZATION "
+                         "The threshold does not matter yet. Demand the DISCOVERY printout (observation_space, "
+                         "action_space, env.spec, one step's info dict) - it is the evidence base for choosing "
+                         "the algorithm and budgets. On approval, the next task is the OPTIMIZATION "
                          "task (full training toward the threshold via checkpoint-resume).")
         elif current_phase == "demo":
             lines.append("DEMO: the Executor records video + evaluates the saved model deterministically (no "
@@ -94,8 +96,9 @@ class Director(Reviewer):
             lines.append(
                 f"\n⚠️ ESCALATION: the last 3 failures were ALL '{mode}'. Change the STRATEGY CLASS, not the "
                 "parameter. timeout -> checkpoint-resume in chunks; crash -> change the approach/API; "
-                "low_reward -> change algorithm / add HER; resume_violation -> spell out the exact "
-                "load/print/save lines verbatim in the task.")
+                "low_reward -> change the strategy class (a different algorithm family, or a different "
+                "way of handling the env's reward/experience structure - reason from the discovery "
+                "printout); resume_violation -> spell out the exact load/print/save lines verbatim in the task.")
 
         # Verified-skill precedence (THE PIN BINDS YOU TOO).
         if current_phase in ("validation", "optimization"):
@@ -119,18 +122,24 @@ class Director(Reviewer):
                     "next_task": previous_task, "skill_ops": None, "my_opinion": ""}
         for _attempt in range(2):
             try:
-                return json.loads(extract_json(response.content))
+                parsed = json.loads(extract_json(response.content))
             except json.JSONDecodeError:
-                if _attempt == 0:
-                    fix_prompt = (
-                        "Your previous response could not be parsed as JSON. Return ONLY this object:\n"
-                        '{"approved": true or false, "feedback": "...", "next_task": "...", '
-                        '"skill_ops": {}, "my_opinion": "..."}\n\nYour response was:\n' + (response.content or ""))
-                    try:
-                        response = self.call_llm_timed(fix_prompt, state["stats"], state.get("iteration", 0))
-                        self.print_thinking(response.content)
-                    except Exception:
-                        return fallback
+                parsed = None
+            # Accept ONLY a JSON object. A bare `true`, a number, or a top-level list parses
+            # fine but has no .get() — returning it would crash __call__ at parsed.get("approved")
+            # and kill an unattended night run. Treat non-dict like a parse failure (retry/fallback).
+            if isinstance(parsed, dict):
+                return parsed
+            if _attempt == 0:
+                fix_prompt = (
+                    "Your previous response could not be parsed as a JSON object. Return ONLY this object:\n"
+                    '{"approved": true or false, "feedback": "...", "next_task": "...", '
+                    '"skill_ops": {}, "my_opinion": "..."}\n\nYour response was:\n' + (response.content or ""))
+                try:
+                    response = self.call_llm_timed(fix_prompt, state["stats"], state.get("iteration", 0))
+                    self.print_thinking(response.content)
+                except Exception:
+                    return fallback
         return fallback
 
     # ───────────────────────────── main node ─────────────────────────────
@@ -226,6 +235,13 @@ class Director(Reviewer):
             if llm_approved and not approved:
                 print(f"[yellow]⚖️  Gate '{gate.gate_fired}' overrode APPROVE -> REJECT[/yellow]")
             feedback = gate.feedback_prefix + feedback
+        # When an OPTIMIZATION gate overrides the LLM's APPROVE, the LLM has already written a
+        # NEXT-PHASE task (it believed it passed). The run STAYS in optimization, so shipping that
+        # demo/next-phase note to the Coder is the stale-task race (the demo-regression branch below
+        # already guards its own path). Re-issue the optimization task in flight; the gate-specific
+        # feedback above tells the Coder exactly what to fix.
+        if llm_approved and not approved and gate.gate_fired in ("threshold", "metric_lock", "resume"):
+            next_task = previous_task
 
         # ── 5. skill_ops (never crash on LLM input) ──
         skill_ops = parsed.get("skill_ops", None)
@@ -240,15 +256,26 @@ class Director(Reviewer):
         best_reward = state.get("best_reward_this_env", None)
         if state.get("best_reward_env_index", -1) != current_env_index:
             best_reward = None
-        improved = real_reward is not None and (best_reward is None or real_reward > best_reward)
+        # Only credit improvement when training genuinely accumulated — a resume-violated run
+        # (resume_required but resume_ok=False) trained fresh from scratch; its metric should
+        # not reset consecutive_failures or update best_reward, otherwise the failsafe never
+        # fires on an env whose Coder keeps ignoring the checkpoint.
+        _valid_run = not state.get("resume_required", False) or state.get("resume_ok", True)
+        improved = _valid_run and real_reward is not None and (best_reward is None or real_reward > best_reward)
         if improved:
             best_reward = real_reward
         last_failure_type = ""
         if approved or improved:
             consecutive_failures = 0
-        elif gate.gate_fired == "demo":
-            consecutive_failures = state.get("consecutive_failures", 0)  # measurement event, not a regression
+        elif gate.gate_fired == "demo" and gate.demo_below_threshold:
+            # Demo measured BELOW threshold: the model proved progress (it cleared optimization
+            # to reach demo) and we regress to optimization below, so hold the counter steady -
+            # an oscillation around the threshold must not trigger a spurious env skip.
+            consecutive_failures = state.get("consecutive_failures", 0)
         else:
+            # Everything else, INCLUDING a demo that produced NO measurement (demo_reward is None:
+            # crash / timeout / no saved model). The duo Executor has no LLM fallback, so a broken
+            # demo repeats identically forever - the counter MUST advance so the failsafe can skip.
             consecutive_failures = state.get("consecutive_failures", 0) + 1
             tr = state.get("test_results", "")
             if "RESUME CONTRACT FAILED" in tr or "RESUME CHECK FAILED" in tr:
