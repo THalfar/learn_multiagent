@@ -1,0 +1,136 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# DUO SMOKE — 2 iteraation live-sanity (vaatii Docker Desktop + Ollama + qwen3.6:27b)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sama kuin duo_robot_seeded, mutta max_iterations: 2 -> tarkistaa duo-langoituksen
+# (Director bootstrap-taski ilman LLM-verdiktiä iter 1:llä; Coder näyttää raw-output-blokin
+# iter 2:lla; Executor lokittaa ilman LLM-kenttiä; iteraatiolaskuri +1/kierros; statistics.json
+# laskuttaa vain reviewer-bucketin). EI ratkaise mitään - vain wiring-sanity.
+#
+# Aja:  $env:PYTHONUTF8=1; python main.py config/duo_smoke.yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pipeline: "duo"
+
+environment_progression:
+
+  - name: "PandaReach-v3"
+    max_episode_steps: 50
+    success_threshold: 0.90
+    metric: "success_rate"
+    execution_timeout: 600
+    obs_dim: 6
+    action_type: "continuous"
+    action_dim: 3
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+environment:
+  name: "PandaReach-v3"
+  max_episode_steps: 50
+  obs_dim: 6
+  action_type: "continuous"
+  action_dim: 3
+  device: "auto"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 2               # SMOKE: just exercise the wiring, do not solve anything
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true
+  show_env_switch_chatter: true
+
+  history_window:
+    manager: 3
+    coder: 2
+    tester: 2
+    reviewer: 30
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  agent_opinions:
+    enabled: true
+    manager: true
+    coder: true
+    tester: false
+    reviewer: true
+
+llm:
+  model: "grok-4.3"
+
+agent_llm:
+  manager:   "qwen3.6:27b"
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"
+  reviewer:  "api"
+
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "qwen3.6:27b"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "qwen3.6:27b": { num_ctx: 32768 }
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.05
+  validation_timeout_floor: 90
+  demo_timeout_seconds: 300
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/duo_prompts.yaml"
+
+failsafe:
+  skip_after_consecutive_failures: 25
+
+initial_codex_rules:
+  - "Goal-conditioned sparse-reward envs (Dict observation with achieved_goal/desired_goal) REQUIRE Hindsight Experience Replay. Use SAC with policy='MultiInputPolicy', replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal': 4, 'goal_selection_strategy': 'future'}. Plain SAC/PPO/TD3 without HER cannot solve PandaPush/PandaPickAndPlace."
+
+skills_dir: "skills/duo_smoke"
+initial_skills:
+  - name: "Goal-conditioned envs need HER"
+    when_to_use: "Dict observation with achieved_goal/desired_goal (panda/fetch robotic manipulation), sparse reward."
+    procedure: "Use SAC with policy='MultiInputPolicy', replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal':4,'goal_selection_strategy':'future'}. Read max_episode_steps from env.spec and set learning_starts >= that. Each optimization iteration resume from the checkpoint: SAC.load(path, env=env) + model.load_replay_buffer(buf), then print(f'RESUMED: buffer_transitions={model.replay_buffer.size()}'), learn one wall-clock-sized chunk, then save model + replay buffer. Report success_rate (the is_success fraction over >= 20 eval episodes with fixed seeds), not the raw sparse reward."
+    pitfalls: "Plain SAC/PPO/TD3 without HER cannot solve PandaPush/PandaPickAndPlace. Never pass reset_num_timesteps=False (breaks termination on a reloaded model)."
+    verification: "RESULT line prints success_rate in [0,1] >= the env success_threshold."
+    tags: ["goal", "her", "manipulation", "robotics", "success_rate"]
+    status: "verified"
+
+test_name: "duo_smoke"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true

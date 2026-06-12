@@ -1,0 +1,171 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROBOTTIKÄSI — DUO + SEEDED (Director -> Coder -> Executor)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sama panda-progressio + HER-seedi kuin robot_arm_seeded, MUTTA duo-pipelinella:
+#   Director (Grok/api) = strategi + tuomari + tehtävänantaja YHDESSÄ kutsussa,
+#   Coder (paikallinen qwen3.6:27b) näkee Executorin RAA'AN stdout/stderrin suoraan,
+#   Executor = deterministinen Docker-ajo (EI LLM:ää).
+# Poistaa Manager+Tester-LLM-kerrosten rikkinäinen-puhelin-kohinan.
+#
+# Aja:  $env:PYTHONUTF8=1; python main.py config/duo_robot_seeded.yaml
+# Live: python scripts/live_view.py output/<run_id>
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Pipeline-topologia: duo = Director -> Coder -> Executor (1 LLM-rooli).
+pipeline: "duo"
+
+environment_progression:
+
+  - name: "PandaReach-v3"
+    max_episode_steps: 50
+    success_threshold: 0.90        # SUCCESS RATE (0..1), ei reward!
+    metric: "success_rate"
+    execution_timeout: 600
+    obs_dim: 6
+    action_type: "continuous"
+    action_dim: 3
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+  - name: "PandaPush-v3"
+    max_episode_steps: 50
+    success_threshold: 0.50        # SUCCESS RATE — ratkeaa HER:llä
+    metric: "success_rate"
+    execution_timeout: 1200
+    obs_dim: 18
+    action_type: "continuous"
+    action_dim: 3
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+  - name: "PandaPickAndPlace-v3"
+    max_episode_steps: 50
+    success_threshold: 0.40        # SUCCESS RATE — kova, mutta HER + checkpoint kasaa
+    metric: "success_rate"
+    execution_timeout: 1800
+    obs_dim: 18
+    action_type: "continuous"
+    action_dim: 4
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+environment:
+  name: "PandaReach-v3"
+  max_episode_steps: 50
+  obs_dim: 6
+  action_type: "continuous"
+  action_dim: 3
+  device: "auto"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 300             # Yöajo: reilusti tilaa - checkpoint-resume kasaa edistystä,
+                                  # progress-aware failsafe hoitaa aidosti jumittuneet envit
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true
+  show_env_switch_chatter: true
+
+  history_window:
+    manager: 3      # käyttämätön duossa (ei Manager-nodea)
+    coder: 2        # qwen3.6 sietää oman historiansa -> oppii omista hylätyistä yrityksistä
+    tester: 2       # käyttämätön duossa (ei Tester-nodea)
+    reviewer: 30    # Director näkee pitkän kontekstin (se on ainoa LLM-aivо)
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  agent_opinions:
+    enabled: true
+    manager: true   # käyttämätön duossa
+    coder: true     # duossa Coderilla on ääni tiimichatissä
+    tester: false   # käyttämätön duossa
+    reviewer: true
+
+llm:
+  model: "grok-4.3"
+
+agent_llm:
+  manager:   "qwen3.6:27b"   # käyttämätön duossa, mutta AgentLLMConfig vaatii kaikki 4 avainta
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"   # käyttämätön duossa
+  reviewer:  "api"
+
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "qwen3.6:27b"
+    manager:
+      models:
+        - "qwen3.6:27b"
+    tester:
+      models:
+        - "qwen3.6:27b"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "qwen3.6:27b": { num_ctx: 32768 }
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.05
+  validation_timeout_floor: 90    # panda-gym/pybullet + SAC-init syö ~20-40s kiinteää käynnistystä
+  demo_timeout_seconds: 300
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/duo_prompts.yaml"
+
+failsafe:
+  skip_after_consecutive_failures: 25   # Reilusti yrityksiä per env (laskuri nollautuu kun metric paranee)
+
+# SEEDED: Codex esiseedattu HER-reseptillä (rakenteellinen oivallus annettu).
+initial_codex_rules:
+  - "Goal-conditioned sparse-reward envs (Dict observation with achieved_goal/desired_goal) REQUIRE Hindsight Experience Replay. Use SAC with policy='MultiInputPolicy', replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal': 4, 'goal_selection_strategy': 'future'}. Plain SAC/PPO/TD3 without HER cannot solve PandaPush/PandaPickAndPlace."
+
+# PHASE B: pre-seeded PROCEDURAL skill (structural insight as a METHOD, not a value).
+# Eri skills_dir kuin seeded-quad -> duo-ajon oppiminen ei sekoitu quad-ajoon (puhdas A/B).
+skills_dir: "skills/duo_seeded"
+initial_skills:
+  - name: "Goal-conditioned envs need HER"
+    when_to_use: "Dict observation with achieved_goal/desired_goal (panda/fetch robotic manipulation), sparse reward."
+    procedure: "Use SAC with policy='MultiInputPolicy', replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal':4,'goal_selection_strategy':'future'}. Read max_episode_steps from env.spec and set learning_starts >= that. Each optimization iteration resume from the checkpoint: SAC.load(path, env=env) + model.load_replay_buffer(buf), then print(f'RESUMED: buffer_transitions={model.replay_buffer.size()}'), learn one wall-clock-sized chunk, then save model + replay buffer. Report success_rate (the is_success fraction over >= 20 eval episodes with fixed seeds), not the raw sparse reward."
+    pitfalls: "Plain SAC/PPO/TD3 without HER cannot solve PandaPush/PandaPickAndPlace. Never pass reset_num_timesteps=False (breaks termination on a reloaded model). 30k steps is starvation - size the chunk from measured steps/s and let chunks accumulate. Resuming the model WITHOUT load_replay_buffer silently forgets everything - the Executor rejects a resume without the RESUMED proof line."
+    verification: "RESULT line prints success_rate in [0,1] >= the env success_threshold."
+    tags: ["goal", "her", "manipulation", "robotics", "success_rate"]
+    status: "verified"
+
+test_name: "duo_robot_seeded"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true

@@ -6,6 +6,7 @@ load_dotenv()
 
 from src.config_loader import load_config
 from src.graph import create_graph
+from src.duo_graph import create_duo_graph
 import datetime
 from src.utils.timer import RunStatistics
 from src.utils.banners import print_run_banner, print_final_summary
@@ -15,7 +16,10 @@ from rich import print
 if __name__ == "__main__":
     project_path = sys.argv[1] if len(sys.argv) > 1 else "config/project.yaml"
     config = load_config(project_path=project_path)
-    app = create_graph(config)
+    # Pipeline dispatch: 'duo' = Director->Coder->Executor (3 nodes, 1 LLM); 'quad' (default)
+    # = Manager->Coder->Tester->Reviewer. Everything below (run_id, stats, logger, skill seed,
+    # initial_state incl. demo fields, recursion_limit) is shared by both.
+    app = create_duo_graph(config) if config.pipeline == "duo" else create_graph(config)
 
     run_id = f"{config.test_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     stats = RunStatistics(run_id=run_id)
