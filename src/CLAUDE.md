@@ -57,6 +57,7 @@ src/utils/            -- Banners, logging, model switching, timing
 | `shodan_rules` | `List[Dict]` | Divine Codex rules `[{"rule": str, "iteration": int}]` |
 | `current_env_index` | `int` | Index in environment_progression |
 | `solved_environments` | `List[str]` | Genuinely solved env names (threshold met) |
+| `env_switch_reports` | `List[Dict]` | SHODAN's growing per-switch chronicle (Manager/Director append; **must be a declared channel** or LangGraph silently drops the write) |
 | `skipped_environments` | `List[str]` | Envs abandoned via failsafe (NOT solved) |
 | `best_reward_this_env` | `float` | Best real reward seen for current env (progress-aware failsafe) |
 | `best_reward_env_index` | `int` | Env index that `best_reward_this_env` refers to |

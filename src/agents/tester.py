@@ -789,7 +789,11 @@ def compute_execution_timeout(config, base_timeout: int, phase: str) -> int:
       cost (imports + CUDA init + pybullet, ~10-40s) that a bare %-multiplier ignores;
       without it a 12s timeout burned 3-4 iterations per env on pure step-roulette.
     - optimization: the full base timeout (one wall-clock-bounded chunk).
-    - demo: training_phases.demo_timeout_seconds (default 300).
+    - demo: max(demo_timeout_seconds floor, 0.5 x base). The deterministic demo evaluates 20
+      fixed-seed episodes (5 recorded) - a real workload on a long-horizon env. A flat 300s
+      floor that fit the OLD 5-episode demo can be blown through now, yielding demo_reward=None
+      and (with the demo gate) a wasted retry loop; scaling with the env's own timeout fixes it
+      while staying a no-op for short-horizon envs (the process exits as soon as it finishes).
 
     Module-level so BOTH the Tester and the duo Executor bound runs identically."""
     training_phases = getattr(config.project, 'training_phases', None)
@@ -800,8 +804,23 @@ def compute_execution_timeout(config, base_timeout: int, phase: str) -> int:
     elif phase == "optimization":
         return base_timeout
     elif phase == "demo":
-        return getattr(training_phases, 'demo_timeout_seconds', 300) if training_phases else 300
+        demo_floor = getattr(training_phases, 'demo_timeout_seconds', 300) if training_phases else 300
+        return max(demo_floor, int(base_timeout * 0.5))
     return base_timeout
+
+
+def strip_invalid_timeout_kwarg(code: str) -> str:
+    """Remove an invalid `.learn(..., timeout=...)` kwarg some LLMs emit.
+
+    Bounded to ONE line / ONE kwarg, dropping exactly one adjacent comma so the call stays
+    valid whether timeout is first or last. The earlier greedy form `timeout\\s*=\\s*[^,)]+`
+    matched ACROSS newlines (a negated class matches '\\n'), so a plain `timeout = 540`
+    assignment followed by more code could delete whole statements up to the next ',' or ')'.
+    A standalone `timeout = N` assignment (no surrounding comma) is intentionally left untouched.
+    Shared by the Tester and the duo Executor (one safe implementation, no drift)."""
+    code = re.sub(r'\btimeout\s*=\s*[^,)\n]+[ \t]*,[ \t]*', '', code)   # timeout=val, ...
+    code = re.sub(r'[ \t]*,[ \t]*\btimeout\s*=\s*[^,)\n]+', '', code)   # ..., timeout=val
+    return code
 
 
 class Tester(BaseAgent):
@@ -967,17 +986,18 @@ for vf in video_files:
         _demo_none = {"demo_reward": None} if _in_demo else {}
 
         # Remove invalid 'timeout' argument from model.learn() call in generated code
-        code = re.sub(
-            r'timeout\\s*=\\s*[^,\\)]+(?=\\s*[,\\)]|$)',
-            '',
-            code,
-            flags=re.IGNORECASE
-        )
+        # (shared, newline-safe helper; the old inline regex was double-escaped here and inert).
+        code = strip_invalid_timeout_kwarg(code)
+        # This iteration runs no optimization chunk on the early-return paths below, so clear any
+        # resume verdict left in state from a PREVIOUS iteration - otherwise the reviewer's resume
+        # gate fires on stale flags and misattributes this iteration's failure to the resume contract.
+        _no_resume = {"resume_required": False, "resume_ok": True}
         if not code:
             return {
                 "test_results": "No code to test",
                 "execution_stdout": "",
                 "execution_stderr": "",
+                **_no_resume,
                 **_demo_none,
             }
 
@@ -986,6 +1006,7 @@ for vf in video_files:
                 "test_results": "ERROR: Dangerous code detected",
                 "execution_stdout": "",
                 "execution_stderr": "Dangerous code detected, execution blocked",
+                **_no_resume,
                 **_demo_none,
             }
 
@@ -1010,6 +1031,7 @@ for vf in video_files:
                     "execution_stdout": "",
                     "execution_stderr": "LINT FAILED:\n" + _lint.feedback(),
                     "diagnosis": ("LINT FAILED: " + _lint.feedback())[:300],  # don't leave a stale diagnosis
+                    **_no_resume,  # this iteration ran no chunk -> clear any stale resume verdict
                 }
 
         # MONIVAIHEINEN TREENI: Phase-based timeout (shared with the duo Executor).

@@ -35,7 +35,10 @@ Key methods:
 - `_ensure_model_loaded()` — Ollama model swap (skip if same model already loaded); single
   source of truth for the unload+preload+spinner sequence (was copy-pasted in call_llm_timed/call_llm)
 - `render_template(template, **kwargs)` — `format_map` with empty-default for missing keys, so
-  OPTIONAL placeholders (e.g. `{shodan_rules}`) need no per-call try/except KeyError fallback
+  OPTIONAL placeholders (e.g. `{shodan_rules}`) need no per-call try/except KeyError fallback. A
+  missing key renders empty but logs a **once-per-run** `WARNING render_template: placeholder {x}
+  not supplied` (so a typo'd/unwired placeholder is visible instead of silently degrading a prompt
+  for a whole night run; legitimate optional placeholders warn once, not every iteration)
 - `_estimate_tokens(text)` — rough token count (chars/3.5)
 - `log_context_to_conversation(state)` — writes context usage to conversation logger
 - `format_agent_opinions_context(state)` — formats team chatter for prompt injection
@@ -90,7 +93,8 @@ Executes code in Docker sandbox and analyzes results.
 - `generate_video_script(env_name, model_path, output_dir, metric="reward", n_eval_episodes=20, n_video_episodes=5)` — `@staticmethod`. Evaluates 20 FIXED-seed episodes (`reset(seed=2000+ep)`), records video for the first 5 (`episode_trigger=lambda e: e < 5`), and prints a **metric-aware** RESULT (`success_rate` via the `is_success` fraction for goal envs, else `mean_reward`). Root-cause fix for the demo-reward gate.
 - In demo phase `__call__`: passes `metric=current_env.metric`; sets `demo_reward` on EVERY return path (value or None); bypasses LLM code, falls back to LLM flow if the script fails.
 - After optimization: finds saved model and sets `best_model_path` in returned state
-- `compute_execution_timeout(config, base_timeout, phase)` — module-level (shared with the Executor): validation floor/multiplier, optimization full, demo `demo_timeout_seconds`
+- `compute_execution_timeout(config, base_timeout, phase)` — module-level (shared with the Executor): validation floor/multiplier, optimization full, demo `max(demo_timeout_seconds, 0.5 × base)` (the demo evaluates 20 fixed-seed episodes, so a flat floor could time out a long-horizon env)
+- `strip_invalid_timeout_kwarg(code)` — module-level (shared with the Executor): removes a stray `.learn(..., timeout=...)` kwarg, **bounded to one line / one kwarg** (the old greedy regex matched across newlines and could delete whole statements around a plain `timeout = N` assignment)
 
 **Rule-based diagnostics:**
 - `diagnose_common_issues()` — catches known failures (timeout+wrong device, wrong algo for action space, missing model.save, callback crashes, double .zip, EVAL NOISE: <20 eval episodes on a success_rate env) BEFORE LLM analysis
@@ -117,7 +121,9 @@ Frontier API model that reviews code + results.
   (one shared, unit-testable implementation): threshold gate, metric lock (success_rate in [0,1]),
   resume gate (`resume_required` without `resume_ok`), and the **demo gate** (the demo's measured
   metric must clear the threshold; below → `demo_below_threshold` → Manager regresses demo→optimization).
-  A demo-gate rejection does NOT increment `consecutive_failures`. Returns `demo_below_threshold`.
+  A **below-threshold** demo rejection does NOT increment `consecutive_failures` (the regression keeps
+  training); a **no-measurement** demo (`demo_reward=None`) DOES increment it, so a broken demo is
+  failsafe-bounded rather than looping. Returns `demo_below_threshold`.
 - Optimization criteria include the cumulative status (total steps, metric curve) + structural
   truths: timeout bounds ONE CHUNK (never order from-scratch / smaller chunks for low reward),
   and verified skills are pinned (SHODAN may not contradict them)
@@ -131,17 +137,23 @@ model, the "reviewer" timer bucket, `config.get_prompt("reviewer")`, and `genera
 One `__call__` does verdict(N−1) + task(N):
 1. **Bootstrap** — no task yet → deterministic first validation task (`env_transitions.initial_validation_task`), no LLM call.
 2. Deterministic context (ported from the Manager): cumulative status, SPS-sized chunk, resume block, escalation ladder, verified-skill precedence.
-3. ONE `call_llm_timed` → JSON `{approved, feedback, next_task, skill_ops, my_opinion}` (shared `json_extract.extract_json` + retry, fallback = reject + repeat task).
-4. `apply_verdict_gates` (same four gates). 5. `skill_ops` (never crash). 6. Progress-aware failsafe **+ immediate env-skip** (the Director can switch env in the same call). 7. Phase machine (validation→optimization→demo→solved/DONE; **demo-reward regression deterministically overrides the LLM's next_task**). 8. Logs as both reviewer (verdict) and manager (next task); returns **exactly one `iteration: 1`** per path.
+3. ONE `call_llm_timed` → JSON `{approved, feedback, next_task, skill_ops, my_opinion}` (shared `json_extract.extract_json` + retry; `_parse_verdict` accepts **only a JSON object** — a bare `true`/list/number is treated as a parse failure, never returned, so `.get("approved")` can't crash the run; fallback = reject + repeat task).
+4. `apply_verdict_gates` (same four gates). When an **optimization** gate (threshold/metric_lock/resume) overrides the LLM's APPROVE, `next_task` is reset to the in-flight optimization task — else the LLM's next-phase note ships while the phase stays optimization (stale-task race). 5. `skill_ops` (never crash). 6. Progress-aware failsafe **+ immediate env-skip** (the Director can switch env in the same call). 7. Phase machine (validation→optimization→demo→solved/DONE; **demo-reward regression deterministically overrides the LLM's next_task**). 8. Logs as both reviewer (verdict) and manager (next task); returns **exactly one `iteration: 1`** per path.
 
 ## executor.py — Executor (duo pipeline; NOT a BaseAgent — no LLM)
 Deterministic sandbox node mirroring `Tester.__call__` minus the LLM analysis/chat. Reuses the
 Tester's `run_in_container` / `diagnose_common_issues` / `check_video_files` / `auto_fix_common_issues` /
 `is_safe_code` / `compute_execution_timeout` / `Tester.generate_video_script` / `Tester._find_saved_model`.
-Emits a factual report: raw stdout/stderr + `=== AUTOMATED DIAGNOSTICS ===` (the Coder's raw-revision
 input), parsed RESULT → deterministic `test_results`, resume pre/post gates, cumulative tracking,
 `best_model_path`. Demo path is deterministic-ONLY (no LLM fallback) and sets `demo_reward`. NEVER
 returns `iteration`/`approved`/`current_task` or history/opinion keys.
+- `best_model_path` is set after **validation OR optimization** (both save a model), so the Director's
+  checkpoint signal (it reads `best_model_path`) matches this Executor's resume pre-gate (which scans
+  the filesystem) — otherwise the validation `.zip` makes the gate demand a resume the Director told
+  the Coder to skip ("train fresh"), a guaranteed wasted iteration.
+- The no-code / dangerous-code / lint-backstop early returns clear `resume_required=False, resume_ok=True`
+  (no chunk ran this iteration), so the Director's resume gate can't fire on a previous iteration's
+  stale flags and misattribute a lint failure to the resume contract.
 
 ## env_transitions.py — shared env-transition helpers (pure functions, no LLM)
 `initial_validation_task(env)`, `env_switch_reset(idx, task, video_dir)` (incl. the demo-field reset),

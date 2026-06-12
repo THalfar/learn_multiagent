@@ -45,6 +45,7 @@ def create_duo_graph(config: Config):
         approved: bool
         current_env_index: int
         solved_environments: List[str]
+        env_switch_reports: List[Dict[str, Any]]  # SHODAN's growing per-switch chronicle (Director appends)
         conversation_logger: Any
         current_phase: str  # "validation" | "optimization" | "demo"
         best_model_path: str
@@ -71,7 +72,10 @@ def create_duo_graph(config: Config):
         if state.get("current_task", "").upper() == "DONE":
             return "end"
         # Iteration cap (Director is the only node that increments `iteration`).
-        if state.get("iteration", 0) >= config.agents.max_iterations:
+        # Use > not >= because the bootstrap Director call returns iteration:1 without running
+        # any Coder/Executor cycle — counting it against max_iterations would give N-1 real
+        # training cycles instead of N.
+        if state.get("iteration", 0) > config.agents.max_iterations:
             return "end"
         return "coder"
 

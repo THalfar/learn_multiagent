@@ -39,6 +39,7 @@ def create_graph(config: Config):
         approved: bool
         current_env_index: int  # Index in environment_progression
         solved_environments: List[str]  # List of environment names that have been solved
+        env_switch_reports: List[Dict[str, Any]]  # SHODAN's growing per-switch chronicle (Manager/Director appends)
         conversation_logger: Any  # Conversation logger instance
         # Monivaiheinen treeni - vaihe per ympäristö
         current_phase: str  # "validation" | "optimization" | "demo"

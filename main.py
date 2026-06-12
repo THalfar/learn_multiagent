@@ -64,6 +64,7 @@ if __name__ == "__main__":
         "approved": False,
         "current_env_index": 0,  # Start with first environment
         "solved_environments": [],  # No environments solved yet
+        "env_switch_reports": [],  # SHODAN's growing per-switch chronicle (declared channel; persists)
         "conversation_logger": conversation_logger,  # Add logger to state
         # Monivaiheinen treeni: validation -> optimization -> demo
         "current_phase": "validation",  # Aloitetaan aina validoinnilla

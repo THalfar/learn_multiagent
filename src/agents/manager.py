@@ -755,9 +755,12 @@ CRITICAL API RULES:
 
             # Remove thinking tags (common in reasoning models)
             # Handle both <think>...</think> and <thinking>...</thinking>
+            _original = content  # keep original in case stripping empties everything
             content = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
             content = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
             content = content.strip()
+            if not content:  # entire response was inside think tags → fall back to original
+                content = _original
 
             # Try to extract from markdown code blocks first
             json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)

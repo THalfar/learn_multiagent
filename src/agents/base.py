@@ -155,13 +155,27 @@ def unload_ollama_models(ollama_base_url: str = "http://localhost:11434", verbos
         pass
 
 
+_WARNED_MISSING_PLACEHOLDERS = set()
+
+
 class _SafeFormatDict(dict):
     """Mapping for str.format_map where a missing placeholder renders as empty string
     instead of raising KeyError. Lets prompt templates carry OPTIONAL placeholders
     (e.g. {shodan_rules}, which only opus_prompts.yaml defines) that not every prompt
     file provides, so the caller doesn't need a duplicated try/except-without-it
-    fallback. `{{`/`}}` literal braces are handled by format_map exactly as by format."""
+    fallback. `{{`/`}}` literal braces are handled by format_map exactly as by format.
+
+    Renders empty, but WARNS once per unique key per process: empty-on-missing is the
+    point for optional placeholders, yet a TYPO'd or unwired one ({{sucess_threshold}})
+    would otherwise silently degrade a prompt for a whole night run with no diagnostic.
+    Once-per-key keeps the legitimate optional placeholders from spamming every iteration."""
     def __missing__(self, key):
+        # Plain text (no rich markup): this class is module-level and base.py prints via
+        # rich.console.Console instances, not a markup-aware global print.
+        if key not in _WARNED_MISSING_PLACEHOLDERS:
+            _WARNED_MISSING_PLACEHOLDERS.add(key)
+            print(f"WARNING render_template: placeholder {{{key}}} not supplied -> rendered empty "
+                  f"(once-per-run notice; harmless if optional, a typo if not)")
         return ""
 
 

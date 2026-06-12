@@ -612,14 +612,17 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         elif improved:
             consecutive_failures = 0  # real progress this iteration -> don't burn the skip budget
             last_failure_type = ""
-        elif _gate.gate_fired == "demo":
-            # Demo-reward gate rejection: the model ALREADY proved progress (it cleared
-            # optimization to reach the demo). A demo measurement event must not burn the
-            # failsafe budget - hold the counter steady so an oscillation around the
-            # threshold can't trigger a spurious env skip.
+        elif _gate.gate_fired == "demo" and _gate.demo_below_threshold:
+            # Demo measured BELOW threshold: the model ALREADY proved progress (it cleared
+            # optimization to reach the demo) and the Manager regresses demo->optimization on
+            # demo_below_threshold, so hold the counter steady - an oscillation around the
+            # threshold must not trigger a spurious env skip.
             consecutive_failures = state.get("consecutive_failures", 0)
             last_failure_type = ""
         else:
+            # Everything else, INCLUDING a demo with NO measurement (demo_reward is None: crash /
+            # timeout / no saved model). That does NOT regress, so a deterministically broken demo
+            # would loop forever with a frozen counter - it must advance so the failsafe can skip.
             consecutive_failures = state.get("consecutive_failures", 0) + 1
             # Classify failure type
             test_results = state.get("test_results", "")
