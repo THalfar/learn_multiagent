@@ -879,6 +879,11 @@ import statistics
 import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
 from stable_baselines3 import PPO, SAC, A2C, DQN, TD3
+try:
+    from sb3_contrib import TQC, QRDQN
+    _SB3_CONTRIB = [TQC, QRDQN]
+except Exception:
+    _SB3_CONTRIB = []
 # Goal-conditioned robotics envs (panda-gym) must be imported to register their ids
 try:
     import panda_gym
@@ -926,9 +931,9 @@ env = RecordVideo(
     name_prefix="rl-video"
 )
 
-# Auto-detect algorithm by trying each SB3 class
+# Auto-detect algorithm by trying each SB3 class (incl. sb3_contrib)
 model = None
-for AlgClass in [PPO, SAC, A2C, DQN, TD3]:
+for AlgClass in [PPO, SAC, A2C, DQN, TD3] + _SB3_CONTRIB:
     try:
         model = AlgClass.load(model_path, device="auto")
         print(f"MODEL_LOADED: {{AlgClass.__name__}} from {{model_path}}")
