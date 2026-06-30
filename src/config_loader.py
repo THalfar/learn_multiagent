@@ -30,6 +30,7 @@ class EnvironmentStep(BaseModel):
     action_type: Optional[ActionType] = Field(default=None, description="Action space type: discrete or continuous")
     action_dim: Optional[int] = Field(default=None, description="Action space dimension")
     device: DeviceType = Field(default="cpu", description="Training device: cpu (fast for small MLPs), gpu (large networks), auto (system decides)")
+    tags: list[str] = Field(default_factory=list, description="Optional env-family tags for SKILL retrieval (e.g. ['goal','her','manipulation','robotics']). Declared here so the Coder/Manager don't hard-code 'panda'/'fetch' substring heuristics; the substring fallback still applies when this is empty.")
 
 class Algorithm(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -211,6 +212,10 @@ class ProjectConfig(BaseModel):
         default="skills",
         description="Directory for the persistent SkillStore (skills.json + <id>.SKILL.md). Learning accumulates across runs."
     )
+    pipeline: Literal["quad", "duo"] = Field(
+        default="quad",
+        description="Pipeline topology: 'quad' = Manager->Coder->Tester->Reviewer (4 LLM roles); 'duo' = Director(api)->Coder(local)->Executor(deterministic, no LLM). The duo pipeline removes the Manager+Tester LLM layers (raw stdout/stderr goes straight to the Coder) - selects create_duo_graph in main.py."
+    )
     test_name: str
 
 def load_project_config(path: str = 'config/project.yaml') -> ProjectConfig:
@@ -294,6 +299,10 @@ class Config:
     @property
     def skills_dir(self) -> str:
         return self.project.skills_dir
+
+    @property
+    def pipeline(self) -> str:
+        return self.project.pipeline
 
     def get_prompt(self, agent_name: str) -> Dict[str, str]:
         """Get prompt dict for agent (e.g. 'manager')."""

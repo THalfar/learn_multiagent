@@ -5,6 +5,7 @@ import subprocess
 import platform
 from pathlib import Path
 from .base import BaseAgent
+from src.utils.result_parser import parse_result_line
 from rich import print
 from rich.markup import escape as rich_escape
 
@@ -777,15 +778,60 @@ def check_video_files(video_dir: str) -> dict:
         
     except Exception as e:
         video_info["error"] = f"Error checking video directory: {str(e)}"
-    
+
     return video_info
+
+
+def compute_execution_timeout(config, base_timeout: int, phase: str) -> int:
+    """Phase-specific Docker execution timeout (seconds).
+
+    - validation: max(floor, multiplier * base) — the FLOOR covers the fixed startup
+      cost (imports + CUDA init + pybullet, ~10-40s) that a bare %-multiplier ignores;
+      without it a 12s timeout burned 3-4 iterations per env on pure step-roulette.
+    - optimization: the full base timeout (one wall-clock-bounded chunk).
+    - demo: max(demo_timeout_seconds floor, 0.5 x base). The deterministic demo evaluates 20
+      fixed-seed episodes (5 recorded) - a real workload on a long-horizon env. A flat 300s
+      floor that fit the OLD 5-episode demo can be blown through now, yielding demo_reward=None
+      and (with the demo gate) a wasted retry loop; scaling with the env's own timeout fixes it
+      while staying a no-op for short-horizon envs (the process exits as soon as it finishes).
+
+    Module-level so BOTH the Tester and the duo Executor bound runs identically."""
+    training_phases = getattr(config.project, 'training_phases', None)
+    if phase == "validation":
+        multiplier = getattr(training_phases, 'validation_timeout_multiplier', 0.05) if training_phases else 0.05
+        val_floor = getattr(training_phases, 'validation_timeout_floor', 60) if training_phases else 60
+        return max(val_floor, int(base_timeout * multiplier))
+    elif phase == "optimization":
+        return base_timeout
+    elif phase == "demo":
+        demo_floor = getattr(training_phases, 'demo_timeout_seconds', 300) if training_phases else 300
+        return max(demo_floor, int(base_timeout * 0.5))
+    return base_timeout
+
+
+def strip_invalid_timeout_kwarg(code: str) -> str:
+    """Remove an invalid `.learn(..., timeout=...)` kwarg some LLMs emit.
+
+    Bounded to ONE line / ONE kwarg, dropping exactly one adjacent comma so the call stays
+    valid whether timeout is first or last. The earlier greedy form `timeout\\s*=\\s*[^,)]+`
+    matched ACROSS newlines (a negated class matches '\\n'), so a plain `timeout = 540`
+    assignment followed by more code could delete whole statements up to the next ',' or ')'.
+    A standalone `timeout = N` assignment (no surrounding comma) is intentionally left untouched.
+    Shared by the Tester and the duo Executor (one safe implementation, no drift)."""
+    code = re.sub(r'\btimeout\s*=\s*[^,)\n]+[ \t]*,[ \t]*', '', code)   # timeout=val, ...
+    code = re.sub(r'[ \t]*,[ \t]*\btimeout\s*=\s*[^,)\n]+', '', code)   # ..., timeout=val
+    return code
+
 
 class Tester(BaseAgent):
     def __init__(self, config, model_switcher=None):
         super().__init__(config, "tester", model_switcher=model_switcher)
 
-    def _find_saved_model(self, output_dir: str) -> str:
-        """Search for saved SB3 model (.zip) in the output directory."""
+    @staticmethod
+    def _find_saved_model(output_dir: str) -> str:
+        """Search for saved SB3 model (.zip) in the output directory.
+
+        Static so the duo Executor (no LLM, not a BaseAgent) can reuse it."""
         from pathlib import Path
         output_path = Path(output_dir)
         if not output_path.exists():
@@ -806,46 +852,65 @@ class Tester(BaseAgent):
         return str(largest)
 
     @staticmethod
-    def generate_video_script(env_name: str, model_path: str, output_dir: str) -> str:
-        """Generate a deterministic Python script for video recording.
+    def generate_video_script(env_name: str, model_path: str, output_dir: str,
+                              metric: str = "reward", n_eval_episodes: int = 20,
+                              n_video_episodes: int = 5) -> str:
+        """Generate a deterministic eval+video script (bypasses LLM code generation).
 
-        This bypasses LLM code generation entirely - the script finds and loads
-        a saved SB3 model, wraps the env with RecordVideo, and runs evaluation episodes.
-        The model_path is a hint but the script also searches /workspace/output/ recursively.
-        """
+        Loads a saved SB3 model, evaluates `n_eval_episodes` with FIXED seeds
+        (reset(seed=2000+ep)) so the demo metric is REPRODUCIBLE, and records video for
+        only the first `n_video_episodes`. When metric=='success_rate' it reports the
+        is_success fraction (goal-conditioned envs) in the SAME RESULT-line slot
+        parse_result_line reads; otherwise the mean episode reward.
+
+        This is the root-cause fix for the demo-reward gate: the old script always printed
+        RAW mean_reward, which was then compared against a success_rate threshold — so a
+        run that LOOKED good on video but missed the goal was wrongly accepted as solved.
+        The model_path is a hint; the script also searches /workspace/output/ recursively."""
+        if metric == "success_rate":
+            result_line = ('print(f"RESULT: success_rate={success_rate:.2f}, '
+                           'std_reward=0.00, episodes={len(ep_rewards)}")')
+        else:
+            result_line = ('print(f"RESULT: mean_reward={mean_reward:.2f}, '
+                           'std_reward={std_reward:.2f}, episodes={len(ep_rewards)}")')
         return f'''import os
 import glob
+import statistics
 import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
 from stable_baselines3 import PPO, SAC, A2C, DQN, TD3
+try:
+    from sb3_contrib import TQC, QRDQN
+    _SB3_CONTRIB = [TQC, QRDQN]
+except Exception:
+    _SB3_CONTRIB = []
 # Goal-conditioned robotics envs (panda-gym) must be imported to register their ids
 try:
     import panda_gym
 except Exception:
     pass
 
-# Deterministic video recording script (generated by Tester)
+# Deterministic eval+video script (generated by Tester / Executor)
 ENV_NAME = "{env_name}"
 MODEL_PATH_HINT = "{model_path}"
 OUTPUT_DIR = "{output_dir}"
+METRIC = "{metric}"
+N_EVAL_EPISODES = {n_eval_episodes}
+N_VIDEO_EPISODES = {n_video_episodes}
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # === SMART MODEL SEARCH ===
 # Try hint path first, then search recursively for any .zip model
 def find_model():
-    # Try exact hint path
     for path in [MODEL_PATH_HINT, MODEL_PATH_HINT + ".zip"]:
         if os.path.isfile(path):
             print(f"MODEL_FOUND: {{path}} (hint path)")
             return path
-    # Search /workspace/output/ recursively for .zip files
     candidates = glob.glob("/workspace/output/**/*.zip", recursive=True)
     if not candidates:
-        # Also check without .zip extension (SB3 adds it)
         candidates = glob.glob("/workspace/output/**/best_model*", recursive=True)
     if candidates:
-        # Prefer "best_model" in name, then largest file
         best = [c for c in candidates if "best_model" in c]
         chosen = best[0] if best else max(candidates, key=os.path.getsize)
         print(f"MODEL_FOUND: {{chosen}} (searched)")
@@ -857,18 +922,18 @@ if model_path is None:
     print("ERROR: No model .zip found anywhere in /workspace/output/")
     exit(1)
 
-# Create environment with rgb_array rendering (REQUIRED for RecordVideo)
+# render_mode REQUIRED for RecordVideo; record only the first N_VIDEO_EPISODES episodes.
 env = gym.make(ENV_NAME, render_mode="rgb_array")
 env = RecordVideo(
     env,
     video_folder=OUTPUT_DIR,
-    episode_trigger=lambda e: True,
+    episode_trigger=lambda e: e < N_VIDEO_EPISODES,
     name_prefix="rl-video"
 )
 
-# Auto-detect algorithm by trying each SB3 class
+# Auto-detect algorithm by trying each SB3 class (incl. sb3_contrib)
 model = None
-for AlgClass in [PPO, SAC, A2C, DQN, TD3]:
+for AlgClass in [PPO, SAC, A2C, DQN, TD3] + _SB3_CONTRIB:
     try:
         model = AlgClass.load(model_path, device="auto")
         print(f"MODEL_LOADED: {{AlgClass.__name__}} from {{model_path}}")
@@ -881,25 +946,31 @@ if model is None:
     env.close()
     exit(1)
 
-# Run 5 evaluation episodes with RecordVideo
-n_episodes = 5
-total_reward = 0
-for ep in range(n_episodes):
-    obs, info = env.reset()
+# Deterministic evaluation over N_EVAL_EPISODES with FIXED seeds (reproducible metric).
+ep_rewards = []
+ep_successes = []
+for ep in range(N_EVAL_EPISODES):
+    obs, info = env.reset(seed=2000 + ep)
     done = False
-    ep_reward = 0
+    ep_reward = 0.0
+    last_is_success = 0.0
     while not done:
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
-        ep_reward += reward
+        ep_reward += float(reward)
+        if isinstance(info, dict) and "is_success" in info:
+            last_is_success = float(info.get("is_success", 0.0))
         done = terminated or truncated
-    total_reward += ep_reward
-    print(f"Episode {{ep+1}}: reward={{ep_reward:.2f}}")
+    ep_rewards.append(ep_reward)
+    ep_successes.append(1.0 if last_is_success > 0.5 else 0.0)
+    print(f"Episode {{ep+1}}: reward={{ep_reward:.2f}} is_success={{ep_successes[-1]:.0f}}")
 
 env.close()
 
-mean_reward = total_reward / n_episodes
-print(f"RESULT: mean_reward={{mean_reward:.2f}}, std_reward=0.00, episodes={{n_episodes}}")
+mean_reward = sum(ep_rewards) / len(ep_rewards)
+std_reward = statistics.pstdev(ep_rewards) if len(ep_rewards) > 1 else 0.0
+success_rate = sum(ep_successes) / len(ep_successes)
+{result_line}
 
 # Report created videos
 video_files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith(".mp4")]
@@ -912,26 +983,36 @@ for vf in video_files:
     def __call__(self, state: dict) -> dict:
         # NOTE: No transition banner here - coder doesn't have opinions so nothing to show
         code = state.get("code", "")
+        # Computed once at the top: in the demo phase EVERY return path must set demo_reward
+        # explicitly (value or None) so a stale measurement from a previous demo attempt can
+        # never satisfy/trip the reviewer's demo-reward gate.
+        current_phase = state.get("current_phase", "validation")
+        _in_demo = current_phase == "demo"
+        _demo_none = {"demo_reward": None} if _in_demo else {}
 
         # Remove invalid 'timeout' argument from model.learn() call in generated code
-        code = re.sub(
-            r'timeout\\s*=\\s*[^,\\)]+(?=\\s*[,\\)]|$)',
-            '',
-            code,
-            flags=re.IGNORECASE
-        )
+        # (shared, newline-safe helper; the old inline regex was double-escaped here and inert).
+        code = strip_invalid_timeout_kwarg(code)
+        # This iteration runs no optimization chunk on the early-return paths below, so clear any
+        # resume verdict left in state from a PREVIOUS iteration - otherwise the reviewer's resume
+        # gate fires on stale flags and misattributes this iteration's failure to the resume contract.
+        _no_resume = {"resume_required": False, "resume_ok": True}
         if not code:
             return {
                 "test_results": "No code to test",
                 "execution_stdout": "",
-                "execution_stderr": ""
+                "execution_stderr": "",
+                **_no_resume,
+                **_demo_none,
             }
 
         if not is_safe_code(code):
             return {
                 "test_results": "ERROR: Dangerous code detected",
                 "execution_stdout": "",
-                "execution_stderr": "Dangerous code detected, execution blocked"
+                "execution_stderr": "Dangerous code detected, execution blocked",
+                **_no_resume,
+                **_demo_none,
             }
 
         # Get execution timeout from current environment
@@ -944,7 +1025,7 @@ for vf in video_files:
         # already lint-retried (K=2); this is the safety net that skips Docker entirely
         # (1s vs up to 20 min) if a structural error (wrong env / syntax / bad import)
         # still slipped through. Demo phase generates its own script, so skip it there.
-        if state.get("current_phase", "validation") != "demo":
+        if not _in_demo:
             from src.utils.code_lint import lint_code
             _lint = lint_code(code, env_name=(current_env.name if current_env else None))
             if not _lint.ok:
@@ -954,33 +1035,21 @@ for vf in video_files:
                     "test_results": "LINT FAILED (Docker skipped - fix these structural errors):\n" + _lint.feedback(),
                     "execution_stdout": "",
                     "execution_stderr": "LINT FAILED:\n" + _lint.feedback(),
-                    "last_failure_type": "lint_fail",
                     "diagnosis": ("LINT FAILED: " + _lint.feedback())[:300],  # don't leave a stale diagnosis
+                    **_no_resume,  # this iteration ran no chunk -> clear any stale resume verdict
                 }
 
-        # MONIVAIHEINEN TREENI: Phase-based timeout
-        current_phase = state.get("current_phase", "validation")
-        training_phases = getattr(self.config.project, 'training_phases', None)
-
+        # MONIVAIHEINEN TREENI: Phase-based timeout (shared with the duo Executor).
+        execution_timeout = compute_execution_timeout(self.config, base_timeout, current_phase)
         if current_phase == "validation":
-            # Validation: lyhyt timeout, mutta FLOOR huomioi kiinteän käynnistyskustannuksen
-            # (imports + CUDA init + pybullet ~10-40s) jonka pelkkä %-kerroin ohittaa.
-            # Ilman flooria 12s timeout poltti 3-4 iteraatiota per env pelkkään step-arvontaan.
+            training_phases = getattr(self.config.project, 'training_phases', None)
             multiplier = getattr(training_phases, 'validation_timeout_multiplier', 0.05) if training_phases else 0.05
             val_floor = getattr(training_phases, 'validation_timeout_floor', 60) if training_phases else 60
-            execution_timeout = max(val_floor, int(base_timeout * multiplier))
             print(f"[bold cyan]🔬 VALIDATION PHASE: Quick test (timeout: {execution_timeout}s = max({val_floor}s floor, {multiplier*100:.0f}% of {base_timeout}s))[/bold cyan]")
         elif current_phase == "optimization":
-            # Optimization: täysi timeout
-            execution_timeout = base_timeout
             print(f"[bold green]🚀 OPTIMIZATION PHASE: Full training (timeout: {execution_timeout}s)[/bold green]")
         elif current_phase == "demo":
-            # Demo: lyhyt timeout (5 min tai konfiguraatiosta)
-            demo_timeout = getattr(training_phases, 'demo_timeout_seconds', 300) if training_phases else 300
-            execution_timeout = demo_timeout
             print(f"[bold magenta]🎬 DEMO PHASE: Video recording (timeout: {execution_timeout}s)[/bold magenta]")
-        else:
-            execution_timeout = base_timeout
         
         run_id = state["run_id"]
         # Use env-specific subdirectory for code and videos
@@ -1025,7 +1094,6 @@ for vf in video_files:
                                          "so training accumulates:\n" + _fb),
                         "execution_stdout": "",
                         "execution_stderr": "RESUME CONTRACT FAILED:\n" + _fb,
-                        "last_failure_type": "resume_violation",
                         "diagnosis": ("RESUME CONTRACT FAILED: " + "; ".join(_violations))[:400],
                         "resume_required": True,
                         "resume_ok": False,
@@ -1057,11 +1125,14 @@ for vf in video_files:
                 # because video_dir is mounted as /workspace/output
                 docker_model_path = "/workspace/output/best_model.zip"
 
-                # Generate deterministic video script
+                # Generate deterministic eval+video script. metric drives whether the
+                # RESULT line reports success_rate (goal-conditioned) or mean_reward, so the
+                # demo-reward gate compares like-for-like against the env threshold.
+                demo_metric = getattr(current_env, "metric", "reward")
                 iteration = state.get("iteration", 0)
                 docker_output_dir = f"/workspace/output/iter_{iteration}/"
                 video_script = self.generate_video_script(
-                    current_env_name, docker_model_path, docker_output_dir
+                    current_env_name, docker_model_path, docker_output_dir, metric=demo_metric
                 )
 
                 # Save script to disk
@@ -1095,17 +1166,23 @@ for vf in video_files:
                     # Check for video files
                     video_check = check_video_files(video_dir)
 
+                    # The demo's MEASURED metric (success_rate or mean_reward) — the
+                    # reviewer/Director demo-reward gate compares this against the threshold;
+                    # videos alone are NOT proof of solving. None => no RESULT line (the
+                    # gate then just rejects and stays in demo for a retry).
+                    _demo_val = parse_result_line(stdout)["value"]
                     print(f"\n[bold magenta]🎬 Demo execution: {execution_duration:.1f}s[/bold magenta]")
                     if video_check["valid_videos"] > 0:
                         print(f"[bold green]✅ VIDEO SUCCESS: {video_check['valid_videos']} valid video(s) recorded![/bold green]")
                         for vf in video_check["video_files"][:5]:
                             if vf["is_valid"] and not vf["is_empty"]:
                                 print(f"[green]   {vf['name']}: {vf['size_mb']:.2f} MB[/green]")
-
+                        _demo_val_txt = f"{_demo_val:.2f}" if _demo_val is not None else "N/A (no RESULT line)"
                         test_results = (
-                            f"DEMO SUCCESS: Deterministic video recording completed. "
-                            f"{video_check['valid_videos']} valid video(s) created. "
-                            f"Total size: {video_check['total_size'] / (1024*1024):.2f} MB. "
+                            f"DEMO: Deterministic eval over fixed-seed episodes. "
+                            f"Measured {demo_metric}={_demo_val_txt}. "
+                            f"{video_check['valid_videos']} valid video(s), "
+                            f"{video_check['total_size'] / (1024*1024):.2f} MB. "
                             f"Execution time: {execution_duration:.1f}s."
                         )
 
@@ -1117,9 +1194,7 @@ for vf in video_files:
                             try:
                                 valid_videos = [vf for vf in video_check["video_files"]
                                                 if vf.get("is_valid") and not vf.get("is_empty")]
-                                reward_match = re.search(r"mean[_ ]reward[^0-9\-]*(-?\d+(?:\.\d+)?)", stdout, re.IGNORECASE)
-                                mean_reward = float(reward_match.group(1)) if reward_match else None
-                                logger.log_video(current_env_name, valid_videos, mean_reward=mean_reward)
+                                logger.log_video(current_env_name, valid_videos, mean_reward=_demo_val)
                             except Exception as video_log_err:
                                 print(f"[dim]Could not embed video in log: {video_log_err}[/dim]")
 
@@ -1127,6 +1202,7 @@ for vf in video_files:
                             "test_results": test_results,
                             "execution_stdout": stdout,
                             "execution_stderr": stderr,
+                            "demo_reward": _demo_val,
                             "tester_reviewer_response": "",
                             "iteration": 1,
                         }
@@ -1624,17 +1700,15 @@ for vf in video_files:
                 # crashed and printed no "RESULT: mean_reward=X" line — they copy a previous
                 # iteration's number from history. Reconcile against the actual stdout so the
                 # approve/reject logic never judges a phantom reward.
-                _result_match = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", stdout or "")
-                if _result_match:
+                _parsed_result = parse_result_line(stdout)
+                if _parsed_result["value"] is not None:
                     # Real RESULT line present -> its numbers are authoritative (also fixes the
                     # local model's occasional sign flip, e.g. +192.35 reported as -192.35).
-                    metrics["mean_reward"] = float(_result_match.group(1))
-                    _std_match = re.search(r"std_reward\s*=\s*(-?\d+(?:\.\d+)?)", stdout or "")
-                    if _std_match:
-                        metrics["std_reward"] = float(_std_match.group(1))
-                    _eps_match = re.search(r"episodes\s*=\s*(\d+)", stdout or "")
-                    if _eps_match:
-                        metrics["n_episodes"] = int(_eps_match.group(1))
+                    metrics["mean_reward"] = _parsed_result["value"]
+                    if _parsed_result["std"] is not None:
+                        metrics["std_reward"] = _parsed_result["std"]
+                    if _parsed_result["episodes"] is not None:
+                        metrics["n_episodes"] = _parsed_result["episodes"]
                     try:
                         # Higher reward is always better; threshold is a minimum.
                         metrics["meets_threshold"] = float(metrics["mean_reward"]) >= float(success_threshold)
@@ -1846,12 +1920,12 @@ for vf in video_files:
             # Makes (non-)accumulation VISIBLE: total steps trained this env + the metric
             # curve. Three flat chunks with resume active => the Manager/Reviewer can see
             # the mechanism is broken instead of blaming hyperparameters.
-            _res_m = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", stdout or "")
+            _res_val = parse_result_line(stdout)["value"]
             _steps_m = (re.search(r"total_timesteps\s*=\s*(\d+)", code)
                         or re.search(r"\.learn\(\s*(\d+)", code))
-            if _res_m:
+            if _res_val is not None:
                 if current_phase == "optimization":
-                    result_dict["metric_history"] = (state.get("metric_history") or []) + [float(_res_m.group(1))]
+                    result_dict["metric_history"] = (state.get("metric_history") or []) + [_res_val]
                 if _steps_m:
                     _steps_done = int(_steps_m.group(1))
                     result_dict["total_env_steps"] = (state.get("total_env_steps") or 0) + _steps_done
@@ -1869,6 +1943,12 @@ for vf in video_files:
                     print(f"[bold green]💾 MODEL FOUND: {model_path}[/bold green]")
                 else:
                     print(f"[yellow]⚠️  No saved model (.zip) found in {video_dir}[/yellow]")
+
+            # Demo phase reached via the deterministic script falling through to this LLM
+            # flow: set the demo-reward gate's input explicitly (value or None) so a stale
+            # measurement from a prior attempt can't leak. None => gate rejects, stays in demo.
+            if _in_demo:
+                result_dict["demo_reward"] = _res_val
 
             result_dict.update(history_update)
             result_dict.update(opinion_update)
@@ -1924,6 +2004,7 @@ for vf in video_files:
                 "execution_stderr": f"Execution timeout after {execution_timeout} seconds",
                 "resume_required": resume_required,
                 "resume_ok": False if resume_required else True,
+                **_demo_none,
             }
         except Exception as e:
             print("\n" + "-" * 70)
@@ -1947,5 +2028,6 @@ for vf in video_files:
             return {
                 "test_results": f"Unexpected: {str(e)[:200]}",
                 "execution_stdout": "",
-                "execution_stderr": str(e)
+                "execution_stderr": str(e),
+                **_demo_none,
             }

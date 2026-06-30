@@ -1,0 +1,24 @@
+{
+  "skills": [
+    {
+      "id": "solve-panda-robotic-manipulation",
+      "name": "Solve panda / robotic manipulation",
+      "when_to_use": "A goal-conditioned / sparse-reward env like PandaReach-v3 (Dict obs with desired_goal).",
+      "procedure": "Use SAC with policy='MlpPolicy'; read max_episode_steps from env.spec and set learning_starts >= that value; each optimization iteration resume from the checkpoint (SAC.load + load_replay_buffer, learn one wall-clock-sized chunk computed from measured steps/s, then save model + replay buffer); report success_rate (the is_success fraction), never the raw sparse reward.",
+      "pitfalls": "never pass reset_num_timesteps=False (breaks termination on a reloaded model); starving the chunk stalls progress - size it from measured steps/s and accumulate.",
+      "verification": "RESULT line prints success_rate in [0,1] >= the env threshold.",
+      "status": "verified",
+      "confidence": 1.0,
+      "source_env": "PandaReach-v3",
+      "created_iter": 5,
+      "last_validated_iter": 27,
+      "tags": [
+        "goal",
+        "her",
+        "manipulation",
+        "robotics",
+        "success_rate"
+      ]
+    }
+  ]
+}

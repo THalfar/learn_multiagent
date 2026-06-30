@@ -411,7 +411,8 @@ class ConversationLogger:
                 f.write("| Skipped | {} |\n".format(
                     ', '.join(skipped_environments)))
             if cost and cost.get("api_calls", 0) > 0:
-                f.write("| API cost (SHODAN / grok-4.3) | ${:.4f} |\n".format(cost["total_cost_usd"]))
+                f.write("| API cost (SHODAN / {}) | ${:.4f} |\n".format(
+                    cost.get("model", "api"), cost["total_cost_usd"]))
                 f.write("| API tokens | {:,} in ({:,} cached) / {:,} out |\n".format(
                     cost["input_tokens"], cost["cached_input_tokens"], cost["output_tokens"]))
             f.write("| Status | {} |\n".format(status))

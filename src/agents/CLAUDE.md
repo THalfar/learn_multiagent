@@ -5,11 +5,19 @@ All agents extend `BaseAgent` (base.py). Each agent is a callable: `__call__(sta
 
 ```
 BaseAgent (base.py)
-  |-- Manager (manager.py)   -- local Ollama model
-  |-- Coder (coder.py)       -- local Ollama model
-  |-- Tester (tester.py)     -- local Ollama model
-  |-- Reviewer (reviewer.py) -- frontier API model (no model_switcher)
+  |-- Manager (manager.py)   -- local Ollama model      [quad]
+  |-- Coder (coder.py)       -- local Ollama model      [quad + duo]
+  |-- Tester (tester.py)     -- local Ollama model      [quad]
+  |-- Reviewer (reviewer.py) -- frontier API model      [quad]
+        |-- Director (director.py) -- frontier API model [duo]  (subclasses Reviewer)
+
+Executor (executor.py)       -- NOT a BaseAgent (no LLM) [duo]
+env_transitions.py           -- pure fns shared by Manager (delegates) + Director
 ```
+
+The **duo** pipeline (`pipeline: duo`) runs Director → Coder → Executor. The Director is
+strategist+judge+taskmaster in one call; the Executor is deterministic (no LLM). See the
+duo sections below; the quad agents are unchanged.
 
 ## base.py — BaseAgent (~1050 lines)
 The foundation class. Handles:
@@ -24,7 +32,13 @@ The foundation class. Handles:
 
 Key methods:
 - `_call_llm(system_prompt, user_prompt)` — main LLM call with retry, timing, token tracking
-- `_ensure_model_loaded()` — Ollama model swap (skip if same model already loaded)
+- `_ensure_model_loaded()` — Ollama model swap (skip if same model already loaded); single
+  source of truth for the unload+preload+spinner sequence (was copy-pasted in call_llm_timed/call_llm)
+- `render_template(template, **kwargs)` — `format_map` with empty-default for missing keys, so
+  OPTIONAL placeholders (e.g. `{shodan_rules}`) need no per-call try/except KeyError fallback. A
+  missing key renders empty but logs a **once-per-run** `WARNING render_template: placeholder {x}
+  not supplied` (so a typo'd/unwired placeholder is visible instead of silently degrading a prompt
+  for a whole night run; legitimate optional placeholders warn once, not every iteration)
 - `_estimate_tokens(text)` — rough token count (chars/3.5)
 - `log_context_to_conversation(state)` — writes context usage to conversation logger
 - `format_agent_opinions_context(state)` — formats team chatter for prompt injection
@@ -43,8 +57,12 @@ Orchestrates the pipeline. Responsibilities:
 Key: Manager checks `current_phase` and `approved` to decide next action. On phase transition, it updates state in-place and continues to task generation.
 
 Learning features:
-- `_extract_recipe_from_code()` — regex-extracts algo/steps/device from winning code
-- `_format_playbook_context()` — formats learned recipes for prompt injection
+- `_skill_from_winning_code(code, env_name, env_tags)` — on env-solve, distils a verified
+  PROCEDURAL skill (algo + policy + HER + checkpoint + metric) into the SkillStore. This
+  REPLACED the old regex "playbook" (`_extract_recipe_from_code`/`_format_playbook_context`,
+  removed) which captured only algo/steps/device, reached only the Manager, and printed
+  'unknown' whenever its regex missed. Env family comes from `EnvironmentStep.tags` (the
+  env-id substring heuristic is only a fallback).
 - Failsafe: skips to next env after N consecutive failures (configurable)
 - `_env_switch_reset()` — shared state reset for ALL env-switch paths (solved/failsafe/LLM);
   sets a concrete validation task (`_initial_validation_task`) + matching `manager_guidance`
@@ -71,10 +89,12 @@ Executes code in Docker sandbox and analyzes results.
 - Sends analysis to Reviewer, can respond to Reviewer's `reviewer_tester_instruction`
 
 **Deterministic demo video recording:**
-- `_find_saved_model(output_dir)` — searches for `.zip` model files after optimization, prefers `best_model.zip`
-- `generate_video_script(env_name, model_path, output_dir)` — generates hardcoded Python script that auto-detects SB3 algorithm and records video with RecordVideo
-- In demo phase `__call__`: if `best_model_path` exists, bypasses LLM code entirely and runs deterministic script. Falls back to LLM flow if script fails.
+- `_find_saved_model(output_dir)` — `@staticmethod` (so the duo Executor can reuse it), searches for `.zip` model files, prefers `best_model.zip`
+- `generate_video_script(env_name, model_path, output_dir, metric="reward", n_eval_episodes=20, n_video_episodes=5)` — `@staticmethod`. Evaluates 20 FIXED-seed episodes (`reset(seed=2000+ep)`), records video for the first 5 (`episode_trigger=lambda e: e < 5`), and prints a **metric-aware** RESULT (`success_rate` via the `is_success` fraction for goal envs, else `mean_reward`). Root-cause fix for the demo-reward gate.
+- In demo phase `__call__`: passes `metric=current_env.metric`; sets `demo_reward` on EVERY return path (value or None); bypasses LLM code, falls back to LLM flow if the script fails.
 - After optimization: finds saved model and sets `best_model_path` in returned state
+- `compute_execution_timeout(config, base_timeout, phase)` — module-level (shared with the Executor): validation floor/multiplier, optimization full, demo `max(demo_timeout_seconds, 0.5 × base)` (the demo evaluates 20 fixed-seed episodes, so a flat floor could time out a long-horizon env)
+- `strip_invalid_timeout_kwarg(code)` — module-level (shared with the Executor): removes a stray `.learn(..., timeout=...)` kwarg, **bounded to one line / one kwarg** (the old greedy regex matched across newlines and could delete whole statements around a plain `timeout = N` assignment)
 
 **Rule-based diagnostics:**
 - `diagnose_common_issues()` — catches known failures (timeout+wrong device, wrong algo for action space, missing model.save, callback crashes, double .zip, EVAL NOISE: <20 eval episodes on a success_rate env) BEFORE LLM analysis
@@ -83,7 +103,8 @@ Executes code in Docker sandbox and analyzes results.
 **Checkpoint-resume enforcement (optimization):**
 - Pre-Docker: if a checkpoint exists (`_find_saved_model`), the script must satisfy
   `check_resume_contract()` (load model + buffer, RESUMED print, save both) — otherwise
-  Docker is skipped and the iteration fails fast with `last_failure_type="resume_violation"`
+  Docker is skipped and the iteration fails fast (test_results carries "RESUME CONTRACT FAILED",
+  which the Reviewer classifies into `failure_history` for the escalation ladder)
 - Post-run: stdout must contain `RESUMED: buffer_transitions=N` with N>0, else
   `resume_ok=False` and test_results is prefixed with RESUME CHECK FAILED
 - Cumulative tracking: appends to `metric_history`, adds parsed steps to `total_env_steps`,
@@ -96,10 +117,13 @@ Docker config: `DOCKER_IMAGE = "citadel-rl:latest"`, `ALLOWED_DIR = output/`
 ## reviewer.py — Reviewer/SHODAN (~670 lines)
 Frontier API model that reviews code + results.
 - Phase-aware criteria (validation: "does it run?", optimization: "meets threshold?", demo: "video works?")
-- Deterministic gates that override an LLM APPROVE: threshold gate (real stdout reward vs threshold),
-  metric lock (success_rate must be in [0,1]), and the **resume gate** (`resume_required` without
-  `resume_ok` → REJECT; an unresumed chunk didn't accumulate, a passing fluke must not teach
-  that from-scratch chunks are fine)
+- Deterministic gates that override an LLM APPROVE — now via `src/utils/verdict_gates.apply_verdict_gates()`
+  (one shared, unit-testable implementation): threshold gate, metric lock (success_rate in [0,1]),
+  resume gate (`resume_required` without `resume_ok`), and the **demo gate** (the demo's measured
+  metric must clear the threshold; below → `demo_below_threshold` → Manager regresses demo→optimization).
+  A **below-threshold** demo rejection does NOT increment `consecutive_failures` (the regression keeps
+  training); a **no-measurement** demo (`demo_reward=None`) DOES increment it, so a broken demo is
+  failsafe-bounded rather than looping. Returns `demo_below_threshold`.
 - Optimization criteria include the cumulative status (total steps, metric curve) + structural
   truths: timeout bounds ONE CHUNK (never order from-scratch / smaller chunks for low reward),
   and verified skills are pinned (SHODAN may not contradict them)
@@ -107,9 +131,39 @@ Frontier API model that reviews code + results.
 - Generates `reviewer_tester_instruction` for next iteration's Tester
 - No `model_switcher` — stays on API model always
 
+## director.py — Director (duo pipeline; `class Director(Reviewer)`)
+Frontier API model; the ONLY LLM in the duo pipeline. Subclasses Reviewer to inherit the api
+model, the "reviewer" timer bucket, `config.get_prompt("reviewer")`, and `generate_environment_switch_report`.
+One `__call__` does verdict(N−1) + task(N):
+1. **Bootstrap** — no task yet → deterministic first validation task (`env_transitions.initial_validation_task`), no LLM call.
+2. Deterministic context (ported from the Manager): cumulative status, SPS-sized chunk, resume block, escalation ladder, verified-skill precedence.
+3. ONE `call_llm_timed` → JSON `{approved, feedback, next_task, skill_ops, my_opinion}` (shared `json_extract.extract_json` + retry; `_parse_verdict` accepts **only a JSON object** — a bare `true`/list/number is treated as a parse failure, never returned, so `.get("approved")` can't crash the run; fallback = reject + repeat task).
+4. `apply_verdict_gates` (same four gates). When an **optimization** gate (threshold/metric_lock/resume) overrides the LLM's APPROVE, `next_task` is reset to the in-flight optimization task — else the LLM's next-phase note ships while the phase stays optimization (stale-task race). 5. `skill_ops` (never crash). 6. Progress-aware failsafe **+ immediate env-skip** (the Director can switch env in the same call). 7. Phase machine (validation→optimization→demo→solved/DONE; **demo-reward regression deterministically overrides the LLM's next_task**). 8. Logs as both reviewer (verdict) and manager (next task); returns **exactly one `iteration: 1`** per path.
+
+## executor.py — Executor (duo pipeline; NOT a BaseAgent — no LLM)
+Deterministic sandbox node mirroring `Tester.__call__` minus the LLM analysis/chat. Reuses the
+Tester's `run_in_container` / `diagnose_common_issues` / `check_video_files` / `auto_fix_common_issues` /
+`is_safe_code` / `compute_execution_timeout` / `Tester.generate_video_script` / `Tester._find_saved_model`.
+input), parsed RESULT → deterministic `test_results`, resume pre/post gates, cumulative tracking,
+`best_model_path`. Demo path is deterministic-ONLY (no LLM fallback) and sets `demo_reward`. NEVER
+returns `iteration`/`approved`/`current_task` or history/opinion keys.
+- `best_model_path` is set after **validation OR optimization** (both save a model), so the Director's
+  checkpoint signal (it reads `best_model_path`) matches this Executor's resume pre-gate (which scans
+  the filesystem) — otherwise the validation `.zip` makes the gate demand a resume the Director told
+  the Coder to skip ("train fresh"), a guaranteed wasted iteration.
+- The no-code / dangerous-code / lint-backstop early returns clear `resume_required=False, resume_ok=True`
+  (no chunk ran this iteration), so the Director's resume gate can't fire on a previous iteration's
+  stale flags and misattribute a lint failure to the resume contract.
+
+## env_transitions.py — shared env-transition helpers (pure functions, no LLM)
+`initial_validation_task(env)`, `env_switch_reset(idx, task, video_dir)` (incl. the demo-field reset),
+`skill_from_winning_code(code, env_name, env_tags)`. The Manager keeps 1-line delegating staticmethods
+(exercised by `smoke_test_fixes.py`); the Director imports the module functions directly.
+
 ## Patterns
 - Each agent's `__call__` follows: build prompt -> call LLM -> parse response -> update state -> return partial state
 - Prompt templates loaded via `self.config.get_prompt(self.agent_name)`
-- `.format()` with named placeholders; try/except KeyError for optional vars
+- `self.render_template(template, **kwargs)` with named placeholders; optional vars (e.g.
+  `{shodan_rules}`) render empty when a prompt file omits them — no try/except KeyError needed
 - All agents log to `conversation_logger` from state
 - `iteration` returned as 1 (auto-added by LangGraph's Annotated[int, operator.add])

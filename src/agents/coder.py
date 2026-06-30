@@ -24,8 +24,14 @@ class Coder(BaseAgent):
         if iteration == 0 or not run_id:
             return ""
 
-        # Try to load previous iteration's code
-        prev_code_path = f"output/{run_id}/code/agent_code_iter_{iteration - 1}.py"
+        # Try to load previous iteration's code. The Tester/Executor write to the
+        # env-specific subdir output/{run_id}/{env}/code/ - look there (the old bare
+        # output/{run_id}/code/ path never matched, so the Coder never saw its prior code).
+        env_progression = self.config.environment_progression
+        current_env_index = state.get("current_env_index", 0)
+        current_env = env_progression[current_env_index] if env_progression and current_env_index < len(env_progression) else None
+        env_name = current_env.name if current_env else self.config.environment.name
+        prev_code_path = f"output/{run_id}/{env_name}/code/agent_code_iter_{iteration - 1}.py"
         if not os.path.exists(prev_code_path):
             return ""
 
@@ -71,6 +77,36 @@ class Coder(BaseAgent):
                 lines.append(f"  Reviewer said: {reason[:300]}")
         lines.append("=== end recent attempts ===")
         return "\n".join(lines)
+
+    def _format_raw_output(self, state: dict) -> str:
+        """DUO pipeline only: show the Coder the previous run's RAW stdout/stderr tail
+        directly (plus the full AUTOMATED DIAGNOSTICS block), instead of a local model's
+        paraphrase. This is the whole point of the duo topology - the Coder fixes what the
+        container ACTUALLY printed, not a 'broken telephone' summary. Empty for the quad
+        pipeline (the Tester paraphrases there) and on the first iteration (nothing ran yet)."""
+        if getattr(self.config, "pipeline", "quad") != "duo":
+            return ""
+        stdout = state.get("execution_stdout", "") or ""
+        stderr = state.get("execution_stderr", "") or ""
+        if not stdout and not stderr:
+            return ""
+        import re
+        stderr_tail = stderr[-3000:] if stderr else ""
+        parts = ["", "=== PREVIOUS RUN - RAW EXECUTION OUTPUT (ground truth; fix what IT says, not what you assume) ==="]
+        if stdout:
+            parts.append("--- stdout (tail) ---")
+            parts.append(stdout[-2000:])
+        if stderr:
+            parts.append("--- stderr (tail) ---")
+            parts.append(stderr_tail)
+        # Re-extract the AUTOMATED DIAGNOSTICS block in full - the tail cut above may have
+        # truncated it, and it is the single highest-signal hint for the next revision.
+        m = re.search(r"=== AUTOMATED DIAGNOSTICS ===.*?=== END DIAGNOSTICS ===", stderr, re.DOTALL)
+        if m and m.group(0) not in stderr_tail:
+            parts.append("--- automated diagnostics (full, re-extracted) ---")
+            parts.append(m.group(0))
+        parts.append("=== end raw execution output ===")
+        return "\n".join(parts)
 
     def _print_code_summary(self, code: str, state: dict):
         """
@@ -260,12 +296,15 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
         # legacy flat shodan_rules list if no skill_store is present in state.
         skill_store = state.get("skill_store", None)
         env_name_now = current_env.name if current_env else self.config.environment.name
-        _tags = []
-        _lname = env_name_now.lower()
-        if "panda" in _lname or "fetch" in _lname:
-            _tags += ["goal", "her", "manipulation", "robotics"]
+        # Prefer the env's declared tags (config); fall back to the env-id substring
+        # heuristic only when none are declared. The metric tag is always derived.
+        _tags = list(getattr(current_env, "tags", []) or []) if current_env else []
+        if not _tags:
+            _lname = env_name_now.lower()
+            if "panda" in _lname or "fetch" in _lname:
+                _tags = ["goal", "her", "manipulation", "robotics"]
         if current_env and getattr(current_env, "metric", "reward") == "success_rate":
-            _tags += ["goal", "success_rate"]
+            _tags = _tags + ["goal", "success_rate"]
 
         if skill_store is not None:
             shodan_rules_text = skill_store.render_for_coder(env_name=env_name_now, tags=_tags)
@@ -292,24 +331,17 @@ raise RuntimeError("Repetition loop detected: model produced only imports")
             else:
                 shodan_rules_text = ""
 
-        # Try formatting with shodan_rules, fall back without if template doesn't have it
-        try:
-            task_template = prompt_dict["task_template"].format(
-                current_task=state.get("current_task", ""),
-                environment=self.config.environment.name,
-                video_dir=video_dir,
-                iteration=iteration,
-                device=device,
-                shodan_rules=shodan_rules_text,
-            )
-        except KeyError:
-            task_template = prompt_dict["task_template"].format(
-                current_task=state.get("current_task", ""),
-                environment=self.config.environment.name,
-                video_dir=video_dir,
-                iteration=iteration,
-                device=device,
-            )
+        # Optional {shodan_rules} placeholder: render_template tolerates prompt files
+        # that omit it (renders empty) without a duplicated fallback format() call.
+        task_template = self.render_template(
+            prompt_dict["task_template"],
+            current_task=state.get("current_task", ""),
+            environment=self.config.environment.name,
+            video_dir=video_dir,
+            iteration=iteration,
+            device=device,
+            shodan_rules=shodan_rules_text,
+        )
         
         # Get code context (previous iteration's code)
         code_context = self._get_code_context(state)
@@ -340,7 +372,10 @@ env = RecordVideo(env, video_folder="/workspace/output/iter_{iteration}/", episo
 ========================================================="""
             task_template += demo_reference
 
-        full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section + recent_section
+        # DUO: the previous run's raw stdout/stderr (+ diagnostics) goes straight to the Coder.
+        raw_section = self._format_raw_output(state)
+
+        full_prompt = prompt_dict["system"] + "\n\n" + history_text + task_template + context_section + recent_section + raw_section
 
         # Print context breakdown before LLM call (coder has no team chatter)
         prompt_tokens = self.estimate_tokens(full_prompt)
@@ -492,7 +527,23 @@ env = RecordVideo(env, video_folder="/workspace/output/iter_{iteration}/", episo
         # Save coder's response to conversation history
         history_update = self.save_message_to_history(state, response.content)
 
+        # === CHAT CALL: team chatter AFTER the work is done. No-op for the quad pipeline
+        # (opus_prompts.yaml has no coder.chat_template -> generate_chat_response returns ""
+        # with no LLM call); the duo pipeline gives the Coder a voice on the team. ===
+        chat_context = {
+            "environment": env_name_for_lint,
+            "current_task": (state.get("current_task", "") or "")[:200],
+            "algo": _algo,
+            "lines": lines_count,
+            "iteration": iteration,
+        }
+        chat_opinion = self.generate_chat_response(state, chat_context, self.config.prompts)
+        opinion_update = self.save_opinion_to_state(state, chat_opinion) if chat_opinion else {}
+        if logger and chat_opinion:
+            logger.log_agent_chat("coder", iteration, chat_opinion)
+
         result = {"code": code}
         result.update(history_update)
+        result.update(opinion_update)
 
         return result

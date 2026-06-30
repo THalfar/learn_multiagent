@@ -48,6 +48,18 @@ RUN pip install --no-cache-dir panda-gym==3.0.7
 # start. This makes gym.make("PandaReach-v3") work even if the script forgets the import.
 RUN echo "import panda_gym" > /usr/local/lib/python3.10/dist-packages/zz_panda_autoload.pth
 
+# Quadrotor RL: gym-pybullet-drones (PyBullet). Pinned to the LAST gymnasium-0.29-compatible
+# commit (cfa7af6, Feb 2025 - the Oct 2025 main bumped to gymnasium ^1.2 + numpy ^2.2, which
+# conflicts with this stack). Installed from the GitHub tarball (no git binary needed) with
+# --no-deps so its caret pins (numpy ^1.24) cannot downgrade the container's numpy/gymnasium;
+# the only runtime dep we lack is transforms3d. sb3-contrib adds TQC/QRDQN/etc. for breadth.
+RUN pip install --no-cache-dir transforms3d sb3-contrib && \
+    pip install --no-cache-dir --no-deps \
+    https://github.com/utiasDSL/gym-pybullet-drones/archive/cfa7af6b0c14344cd0ce6e7112250ff4abff86af.tar.gz
+
+# Auto-register the drone envs too (same .pth mechanism as panda-gym above).
+RUN echo "import gym_pybullet_drones" > /usr/local/lib/python3.10/dist-packages/zz_drones_autoload.pth
+
 # Create non-root user for security
 RUN useradd -m -u 1000 sandbox
 

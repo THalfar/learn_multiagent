@@ -39,6 +39,7 @@ def create_graph(config: Config):
         approved: bool
         current_env_index: int  # Index in environment_progression
         solved_environments: List[str]  # List of environment names that have been solved
+        env_switch_reports: List[Dict[str, Any]]  # SHODAN's growing per-switch chronicle (Manager/Director appends)
         conversation_logger: Any  # Conversation logger instance
         # Monivaiheinen treeni - vaihe per ympäristö
         current_phase: str  # "validation" | "optimization" | "demo"
@@ -47,13 +48,10 @@ def create_graph(config: Config):
         shodan_rules: List[Dict[str, Any]]  # [{"rule": "...", "iteration": N}, ...]
         # Failsafe: skip env after repeated failures
         consecutive_failures: int  # Peräkkäisten REJECTED-iteraatioiden laskuri
-        last_failure_type: str  # "timeout" | "crash" | "low_reward" | ""
         # Honest scoreboard + progress-aware failsafe
         skipped_environments: List[str]  # Envs abandoned via failsafe (NOT solved)
         best_reward_this_env: Any  # Best real reward seen for the current env
         best_reward_env_index: int  # Which env index best_reward_this_env refers to
-        # Manager's Playbook: ympäristöreseptit edellisistä enveistä
-        playbook: List[Dict[str, Any]]  # [{"env": "CartPole-v1", "algo": "PPO", ...}]
         # A3: Coder self-memory - last few (code, diagnosis, verdict) attempts
         recent_attempts: List[Dict[str, Any]]  # [{"iter": N, "verdict": str, "diagnosis": str, "reason": str}]
         # A6: Tester's concise diagnosis of the latest run (feeds recent_attempts)
@@ -69,6 +67,11 @@ def create_graph(config: Config):
         # C2: checkpoint-resume enforcement (Tester verifies; Reviewer gates on it)
         resume_required: bool  # True when optimization ran with an existing checkpoint
         resume_ok: bool  # True when stdout proved RESUMED: buffer_transitions=N (N>0)
+        # Goal A: demo-reward gate - the demo phase's measured metric must ALSO clear the
+        # threshold (videos alone aren't proof). demo_below_threshold drives a demo->
+        # optimization regression so the checkpoint keeps training instead of looping.
+        demo_reward: Any  # demo eval metric (None = no measurement / crash / no RESULT line)
+        demo_below_threshold: bool  # demo measured the metric below threshold -> regress
 
     def should_continue(state: AgentState) -> str:
         # Check if manager said DONE

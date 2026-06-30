@@ -1,6 +1,7 @@
 import json
 import os
 from .base import BaseAgent
+from . import env_transitions
 from rich import print
 from src.utils.banners import print_environment_switch_bombardment, print_manager_report, print_iteration_banner, print_reviewer_cynical_report
 
@@ -9,123 +10,19 @@ class Manager(BaseAgent):
         super().__init__(config, "manager", model_switcher=model_switcher)
 
     @staticmethod
-    def _extract_recipe_from_code(code: str, env_name: str, iterations: int) -> dict:
-        """Extract algorithm, timesteps, device from successful code."""
-        import re
-        recipe = {"env": env_name, "iterations": iterations}
-
-        # Algorithm
-        algo_match = re.search(r'\b(PPO|SAC|A2C|DQN|TD3)\b', code)
-        recipe["algo"] = algo_match.group(1) if algo_match else "unknown"
-
-        # Timesteps
-        steps_match = re.search(r'total_timesteps\s*=\s*(\d+)', code)
-        recipe["steps"] = int(steps_match.group(1)) if steps_match else 0
-
-        # Device
-        device_match = re.search(r'device\s*=\s*["\'](\w+)["\']', code)
-        recipe["device"] = device_match.group(1) if device_match else "unknown"
-
-        return recipe
-
-    @staticmethod
-    def _skill_from_winning_code(code: str, env_name: str) -> dict:
-        """B6: build a PROCEDURAL skill from winning code (far richer than the regex
-        playbook). Captures algorithm + policy class + HER + the metric/checkpoint
-        approach, so the NEXT env's Coder inherits the full recipe, not just 'SAC'."""
-        import re
-        algo_m = re.search(r'\b(PPO|SAC|A2C|DQN|TD3|DDPG)\b', code)
-        algo = algo_m.group(1) if algo_m else "the same algorithm"
-        policy = ("MultiInputPolicy" if "MultiInputPolicy" in code
-                  else ("CnnPolicy" if "CnnPolicy" in code else "MlpPolicy"))
-        uses_her = "HerReplayBuffer" in code
-        is_goal = uses_her or "MultiInputPolicy" in code or "desired_goal" in code
-        lname = env_name.lower()
-        family = "panda / robotic manipulation" if ("panda" in lname or "fetch" in lname) else env_name
-        proc = [f"Use {algo} with policy='{policy}'"]
-        if uses_her:
-            proc.append("replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs={'n_sampled_goal':4,'goal_selection_strategy':'future'}")
-        proc.append("read max_episode_steps from env.spec and set learning_starts >= that value")
-        proc.append("each optimization iteration resume from the checkpoint (SAC.load + load_replay_buffer, learn one ~150k chunk, then save model + replay buffer)")
-        if is_goal:
-            proc.append("report success_rate (the is_success fraction), never the raw sparse reward")
-        return {
-            "name": f"Solve {family}",
-            "when_to_use": (f"A goal-conditioned / sparse-reward env like {env_name} (Dict obs with desired_goal)."
-                            if is_goal else f"An env like {env_name}."),
-            "procedure": "; ".join(proc) + ".",
-            "pitfalls": ("Plain MlpPolicy or no-HER cannot solve goal envs; never pass reset_num_timesteps=False "
-                         "(breaks termination on a reloaded model); 30k steps is starvation - use ~150k chunks and accumulate."
-                         if is_goal else "Commit to one algorithm so checkpoint-resume accumulates."),
-            "verification": ("RESULT line prints success_rate in [0,1] >= the env threshold."
-                             if is_goal else "RESULT mean_reward >= the env threshold."),
-            "source_env": env_name,
-            "tags": (["goal", "her", "manipulation", "robotics", "success_rate"] if is_goal else ["general"]),
-            "status": "verified",
-            "confidence": 0.9,
-        }
+    def _skill_from_winning_code(code: str, env_name: str, env_tags=None) -> dict:
+        """Delegate to env_transitions.skill_from_winning_code (shared with the duo Director)."""
+        return env_transitions.skill_from_winning_code(code, env_name, env_tags)
 
     @staticmethod
     def _initial_validation_task(next_env) -> str:
-        """Concrete first VALIDATION task for a newly entered environment.
-
-        Returned on every env-switch path so the Coder NEVER starts a new env with an
-        empty/stale task (the stale-task race: after a switch the Coder coded the NEW
-        env while manager_guidance still described the OLD env's task -> the Reviewer
-        rejected correct work as 'mismatching intent', one wasted iteration per switch)."""
-        action_type = getattr(next_env, "action_type", "")
-        algo = "SAC" if action_type == "continuous" else "PPO"
-        is_goal = getattr(next_env, "metric", "reward") == "success_rate"
-        metric_note = (" The env is goal-conditioned: report success_rate (the is_success "
-                       "fraction over eval episodes) in the mean_reward slot." if is_goal else "")
-        return (f"Write a minimal VALIDATION script for {next_env.name}: create the env with "
-                f"gym.make('{next_env.name}'), train a fresh {algo} model briefly "
-                f"(1000-2000 timesteps, n_envs=1, default hyperparameters), evaluate, and print "
-                f"exactly 'RESULT: mean_reward=X, std_reward=Y, episodes=Z'.{metric_note} "
-                f"Save the model at the end. Keep the script minimal so it finishes well "
-                f"within the validation timeout.")
+        """Delegate to env_transitions.initial_validation_task (shared with the duo Director)."""
+        return env_transitions.initial_validation_task(next_env)
 
     @staticmethod
     def _env_switch_reset(next_env_index: int, task: str, video_dir: str) -> dict:
-        """Shared state-reset block for ALL env-switch paths (solved / failsafe / LLM
-        switch). One source of truth so no path forgets a field (the C1/C2 fields
-        especially: stale metric_history would poison the next env's curve)."""
-        return {
-            "current_env_index": next_env_index,
-            "current_phase": "validation",
-            "consecutive_failures": 0,
-            "last_failure_type": "",
-            "failure_history": [],
-            "recent_attempts": [],
-            "diagnosis": "",
-            "best_model_path": "",
-            "approved": False,
-            "tasks": [task],
-            "code": "",
-            "test_results": "",
-            "review_feedback": "",
-            "review_suggestions": "",
-            "current_task": task,
-            "manager_guidance": f"Task: {task}",  # keep Reviewer's expectation in sync with the NEW env
-            "video_dir": video_dir,
-            "iteration": 1,
-            # C1/C2: fresh cumulative tracking + resume flags for the new env
-            "total_env_steps": 0,
-            "metric_history": [],
-            "measured_sps": None,
-            "resume_required": False,
-            "resume_ok": True,
-        }
-
-    @staticmethod
-    def _format_playbook_context(playbook: list) -> str:
-        """Format playbook as human-readable context for Manager prompt."""
-        if not playbook:
-            return ""
-        lines = ["\nLESSONS FROM PREVIOUS ENVIRONMENTS (use similar approaches for similar envs):"]
-        for entry in playbook:
-            lines.append(f"  - {entry['env']}: {entry.get('algo','?')}, {entry.get('steps','?')} steps, device={entry.get('device','?')}, solved in {entry.get('iterations','?')} iterations")
-        return "\n".join(lines) + "\n"
+        """Delegate to env_transitions.env_switch_reset (shared with the duo Director)."""
+        return env_transitions.env_switch_reset(next_env_index, task, video_dir)
 
     def _generate_environment_switch_report(self, current_env, next_env, solved_environments, env_progression, state):
         """Generate a report to leadership about environment switch"""
@@ -317,6 +214,28 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
         # MONIVAIHEINEN TREENI: Tarkista ja vaihda vaihe kun approved=True
         current_phase = state.get("current_phase", "validation")
 
+        # Goal A: DEMO-REWARD REGRESSION. The reviewer's demo gate measured the demo metric
+        # BELOW threshold and forced a REJECT (so the approved-branch below won't fire). The
+        # video looked fine but the policy isn't there yet -> regress to OPTIMIZATION so the
+        # checkpoint keeps training. best_model_path is deliberately PRESERVED here: it re-arms
+        # the resume contract (Coder lint + Tester gate) so the next chunk resumes + accumulates.
+        # Clear the demo flags so we don't loop. The final result dict propagates these resets.
+        if current_phase == "demo" and state.get("demo_below_threshold", False):
+            _demo_val = state.get("demo_reward")
+            print(f"\n[bold yellow]{'='*60}[/bold yellow]")
+            print(f"[bold yellow]↩️  DEMO GATE: demo eval {_demo_val} < threshold[/bold yellow]")
+            print(f"[bold cyan]➡️  Regressing to OPTIMIZATION (checkpoint preserved, keep training)[/bold cyan]")
+            print(f"[bold yellow]{'='*60}[/bold yellow]\n")
+            logger = state.get("conversation_logger")
+            if logger:
+                _env_name = env_progression[current_env_index].name if env_progression and current_env_index < len(env_progression) else "unknown"
+                logger.log_phase_transition("demo", "optimization", _env_name)
+            current_phase = "optimization"
+            state = {**state, "current_phase": "optimization", "approved": False,
+                     "demo_reward": None, "demo_below_threshold": False,
+                     "review_feedback": f"DEMO GATE: demo eval {_demo_val} < threshold - continue checkpoint-resume training.",
+                     "review_suggestions": ""}
+
         if state.get("approved", False) and env_progression:
             # Vaihelogiikka: validation -> optimization -> demo -> seuraava env
             # Instead of returning early, update phase and CONTINUE to generate a new task
@@ -346,6 +265,8 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                     logger.log_phase_transition("optimization", "demo", _env_name)
                 current_phase = "demo"
                 state = {**state, "current_phase": "demo", "approved": False, "iteration": 0,
+                         # Goal A: enter demo with a CLEAN gate (no stale measurement)
+                         "demo_reward": None, "demo_below_threshold": False,
                          "review_feedback": "PHASE TRANSITION: Optimization complete. Now record video of trained agent.",
                          "review_suggestions": ""}
             elif current_phase == "demo":
@@ -514,37 +435,34 @@ Your "personal brand" depends on maintaining a consistent narrative of growth an
                     new_video_dir = os.path.abspath(os.path.normpath(f"output/{run_id}/{next_env.name}/videos"))
                     os.makedirs(new_video_dir, exist_ok=True)
 
-                    # Save recipe to Playbook before switching
-                    playbook = list(state.get("playbook", []))
+                    # Distil a PROCEDURAL verified SKILL from the winning code so the next
+                    # env's Coder inherits the full recipe (algo + policy + HER + checkpoint),
+                    # not just regex values. This is the SKILL substrate that replaced the old
+                    # regex "playbook" (which captured only algo/steps/device and reached only
+                    # the Manager, and printed 'unknown' whenever its regex missed).
                     winning_code = state.get("code", "")
                     iterations_used = state.get("iteration", 0)
                     if winning_code:
-                        recipe = self._extract_recipe_from_code(winning_code, current_env.name, iterations_used)
-                        playbook.append(recipe)
-                        print(f"[bold cyan]📖 Playbook: {current_env.name} → {recipe.get('algo','?')}, {recipe.get('steps','?')} steps, {recipe.get('device','?')}[/bold cyan]")
-                        # B6: distil a PROCEDURAL verified SKILL so the next env's Coder inherits
-                        # the full recipe (algo + policy + HER + checkpoint), not just regex values.
                         _ss = state.get("skill_store", None)
                         if _ss is not None:
                             try:
-                                _sk = self._skill_from_winning_code(winning_code, current_env.name)
+                                _sk = self._skill_from_winning_code(winning_code, current_env.name, getattr(current_env, "tags", None))
                                 _sid = _ss.add(created_iter=iterations_used, **_sk)
                                 _ss.save()
                                 print(f"[bold magenta]🧠 SKILL learned (verified): [{_sid}] {_sk['name']}[/bold magenta]")
                             except Exception as _e:
                                 print(f"[dim]skill distil failed: {_e}[/dim]")
 
-                    # Reset state for new environment (preserve env_switch_reports + playbook
-                    # for history!). The reset includes a CONCRETE validation task + matching
-                    # manager_guidance - an empty task here caused the stale-task race (the
-                    # Coder improvised for the NEW env while the Reviewer still judged against
-                    # the OLD env's task; one wasted iteration + wrong blame at every switch).
+                    # Reset state for new environment (preserve env_switch_reports for history).
+                    # The reset includes a CONCRETE validation task + matching manager_guidance -
+                    # an empty task here caused the stale-task race (the Coder improvised for the
+                    # NEW env while the Reviewer still judged against the OLD env's task; one
+                    # wasted iteration + wrong blame at every switch).
                     _next_task = self._initial_validation_task(next_env)
                     _reset = self._env_switch_reset(next_env_index, _next_task, new_video_dir)
                     _reset.update({
                         "solved_environments": solved_environments,
                         "env_switch_reports": env_switch_reports,  # Preserve kierrosraportit history!
-                        "playbook": playbook,  # Preserve learned recipes!
                     })
                     return _reset
                 else:
@@ -740,9 +658,6 @@ CRITICAL API RULES:
         else:
             phase_instruction = ""
 
-        # Format playbook context from learned recipes
-        playbook_context = self._format_playbook_context(state.get("playbook", []))
-
         # A7: escalation ladder - if the SAME failure mode repeats 3x, instruct the Manager
         # to change the STRATEGY CLASS, not the parameter. Appended to phase_instruction so
         # no prompt-template placeholder change is needed.
@@ -779,49 +694,27 @@ CRITICAL API RULES:
                         "Build the task so it implements the skill's procedure.\n" + _sk_txt
                     )
 
-        try:
-            task_template = prompt_dict["task_template"].format(
-                tasks=state.get("tasks", []),
-                code_summary=code_summary,
-                test_results=state.get("test_results", ""),
-                review_feedback=review_feedback,
-                review_suggestions=review_suggestions,
-                iteration=expected_iteration,
-                max_iterations=self.config.agents.max_iterations,
-                environment=current_env_name,
-                success_threshold=current_success_threshold,
-                video_dir=state.get("video_dir", self.config.video.output_dir),
-                env_progression_info=env_progression_info,
-                solved_envs=", ".join(solved_environments) if solved_environments else "None",
-                agent_opinions_context=agent_opinions_context,
-                playbook_context=playbook_context,
-                # Environment specs for Coder
-                obs_dim=obs_dim,
-                action_type=action_type,
-                action_dim=action_dim,
-                device=device,
-            )
-        except KeyError:
-            # Fallback if template doesn't have {playbook_context}
-            task_template = prompt_dict["task_template"].format(
-                tasks=state.get("tasks", []),
-                code_summary=code_summary,
-                test_results=state.get("test_results", ""),
-                review_feedback=review_feedback,
-                review_suggestions=review_suggestions,
-                iteration=expected_iteration,
-                max_iterations=self.config.agents.max_iterations,
-                environment=current_env_name,
-                success_threshold=current_success_threshold,
-                video_dir=state.get("video_dir", self.config.video.output_dir),
-                env_progression_info=env_progression_info,
-                solved_envs=", ".join(solved_environments) if solved_environments else "None",
-                agent_opinions_context=agent_opinions_context,
-                obs_dim=obs_dim,
-                action_type=action_type,
-                action_dim=action_dim,
-                device=device,
-            )
+        task_template = self.render_template(
+            prompt_dict["task_template"],
+            tasks=state.get("tasks", []),
+            code_summary=code_summary,
+            test_results=state.get("test_results", ""),
+            review_feedback=review_feedback,
+            review_suggestions=review_suggestions,
+            iteration=expected_iteration,
+            max_iterations=self.config.agents.max_iterations,
+            environment=current_env_name,
+            success_threshold=current_success_threshold,
+            video_dir=state.get("video_dir", self.config.video.output_dir),
+            env_progression_info=env_progression_info,
+            solved_envs=", ".join(solved_environments) if solved_environments else "None",
+            agent_opinions_context=agent_opinions_context,
+            # Environment specs for Coder
+            obs_dim=obs_dim,
+            action_type=action_type,
+            action_dim=action_dim,
+            device=device,
+        )
         system_prompt = prompt_dict["system"].format(
             environment=current_env_name,
             success_threshold=current_success_threshold
@@ -862,9 +755,12 @@ CRITICAL API RULES:
 
             # Remove thinking tags (common in reasoning models)
             # Handle both <think>...</think> and <thinking>...</thinking>
+            _original = content  # keep original in case stripping empties everything
             content = re.sub(r'<think[^>]*>.*?</think[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
             content = re.sub(r'<thinking[^>]*>.*?</thinking[^>]*>', '', content, flags=re.DOTALL | re.IGNORECASE)
             content = content.strip()
+            if not content:  # entire response was inside think tags → fall back to original
+                content = _original
 
             # Try to extract from markdown code blocks first
             json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
@@ -1269,6 +1165,10 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "solved_environments": solved_environments,  # Preserve solved environments
             "current_phase": state.get("current_phase", "validation"),  # Preserve phase (may have changed)
             "approved": state.get("approved", False),  # Preserve approval state (reset on phase change)
+            # Goal A: propagate the demo-reward gate flags. On a demo->optimization regression
+            # (or optimization->demo entry) these were reset above; otherwise they pass through.
+            "demo_reward": state.get("demo_reward"),
+            "demo_below_threshold": state.get("demo_below_threshold", False),
         }
 
         # Merge history update and opinion update into result

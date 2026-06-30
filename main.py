@@ -6,6 +6,7 @@ load_dotenv()
 
 from src.config_loader import load_config
 from src.graph import create_graph
+from src.duo_graph import create_duo_graph
 import datetime
 from src.utils.timer import RunStatistics
 from src.utils.banners import print_run_banner, print_final_summary
@@ -15,7 +16,10 @@ from rich import print
 if __name__ == "__main__":
     project_path = sys.argv[1] if len(sys.argv) > 1 else "config/project.yaml"
     config = load_config(project_path=project_path)
-    app = create_graph(config)
+    # Pipeline dispatch: 'duo' = Director->Coder->Executor (3 nodes, 1 LLM); 'quad' (default)
+    # = Manager->Coder->Tester->Reviewer. Everything below (run_id, stats, logger, skill seed,
+    # initial_state incl. demo fields, recursion_limit) is shared by both.
+    app = create_duo_graph(config) if config.pipeline == "duo" else create_graph(config)
 
     run_id = f"{config.test_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     stats = RunStatistics(run_id=run_id)
@@ -36,8 +40,11 @@ if __name__ == "__main__":
     # PHASE B: procedural skill memory (persistent across runs; replaces the flat Codex).
     from src.skills import SkillStore
     skill_store = SkillStore(skills_dir=config.skills_dir).load()
+    _skills_was_empty = not skill_store.skills
     skill_store.seed_if_empty(initial_skills=config.initial_skills, initial_rules=config.initial_codex_rules)
-    skill_store.save()
+    if _skills_was_empty and skill_store.skills:
+        skill_store.save()  # only persist when seeding actually added skills; an
+                            # existing store's canonical file is already on disk from load()
 
     initial_state = {
         "run_id": run_id,
@@ -57,6 +64,7 @@ if __name__ == "__main__":
         "approved": False,
         "current_env_index": 0,  # Start with first environment
         "solved_environments": [],  # No environments solved yet
+        "env_switch_reports": [],  # SHODAN's growing per-switch chronicle (declared channel; persists)
         "conversation_logger": conversation_logger,  # Add logger to state
         # Monivaiheinen treeni: validation -> optimization -> demo
         "current_phase": "validation",  # Aloitetaan aina validoinnilla
@@ -66,13 +74,10 @@ if __name__ == "__main__":
         "shodan_rules": [{"rule": r, "iteration": 0} for r in config.initial_codex_rules],
         # Failsafe: skip env after repeated failures
         "consecutive_failures": 0,
-        "last_failure_type": "",
         # Honest scoreboard + progress-aware failsafe
         "skipped_environments": [],
         "best_reward_this_env": None,
         "best_reward_env_index": -1,
-        # Manager's Playbook: learned recipes from solved environments
-        "playbook": [],
         # A3 Coder self-memory / A6 diagnosis / A7 escalation / Phase B skill store
         "recent_attempts": [],
         "diagnosis": "",
@@ -84,6 +89,9 @@ if __name__ == "__main__":
         "measured_sps": None,
         "resume_required": False,
         "resume_ok": True,
+        # Goal A: demo-reward gate (None = no demo measurement yet)
+        "demo_reward": None,
+        "demo_below_threshold": False,
     }
     
     # Print run start banner

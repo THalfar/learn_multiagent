@@ -1,5 +1,7 @@
 import json
 from .base import BaseAgent
+from src.utils.result_parser import parse_result_line
+from src.utils.verdict_gates import apply_verdict_gates
 from rich import print
 
 class Reviewer(BaseAgent):
@@ -132,23 +134,25 @@ DO NOT CARE ABOUT:
         elif current_phase == "demo":
             phase_criteria = f"""
 ===============================================================================
-🎬 PHASE: DEMO - Video is recorded AUTOMATICALLY by Tester's deterministic tool!
+🎬 PHASE: DEMO - Video + deterministic evaluation by the Tester's tool!
 ===============================================================================
-The Tester loads the saved model (best_model.zip) and records video using
-a hardcoded script - NO LLM code generation involved. This is reliable.
+The Tester loads the saved model (best_model.zip), evaluates it over fixed-seed
+episodes, and records video - NO LLM code generation involved. This is reliable.
 
 APPROVE (approved: true) when:
-✓ Test results say "DEMO SUCCESS" with valid video(s)
-✓ ANY valid video file exists (>1KB)
+✓ Valid video(s) exist AND the demo's measured metric >= {success_threshold}
 
-REJECT (approved: false) ONLY when:
-✗ No video file at all (deterministic script failed)
+REJECT (approved: false) when:
+✗ The demo's measured metric < {success_threshold} (regress to OPTIMIZATION, keep training)
+✗ No RESULT line / no video at all (deterministic script failed - retry)
 ✗ No saved model was found (Coder forgot model.save() in optimization)
 
-⚠️ BE DECISIVE:
-- If test results show valid videos, APPROVE IMMEDIATELY
-- Video quality doesn't matter - existence is sufficient
-- The deterministic tool handles RecordVideo API correctly - no API issues
+⚠️ DEMO REWARD GATE (deterministic, overrides your APPROVE):
+Videos alone are NOT proof. The demo measures the SAME metric as optimization
+(success_rate or mean_reward) over fixed-seed episodes; it MUST be >= {success_threshold}.
+If it is below, the environment is NOT solved - the verdict is forced to REJECT and the
+phase regresses to OPTIMIZATION so the checkpoint keeps training. This stops a plausible-
+looking video whose policy still misses the goal from being mistaken for a solve.
 ===============================================================================
 """
         else:
@@ -171,29 +175,19 @@ REJECT (approved: false) ONLY when:
 
         prompt_dict = self.config.get_prompt("reviewer")
 
-        # Try formatting with shodan_rules_display, fall back without if template doesn't have it
-        try:
-            task_template = prompt_dict["task_template"].format(
-                manager_guidance=manager_guidance,
-                code=code,
-                test_results=test_results,
-                success_threshold=success_threshold,
-                video_dir=state.get("video_dir", "output/videos"),
-                agent_opinions_context=agent_opinions_context,
-                tester_response=tester_response,
-                shodan_rules_display=shodan_rules_display,
-            )
-        except KeyError:
-            # Prompt template doesn't have {shodan_rules_display} - use without it
-            task_template = prompt_dict["task_template"].format(
-                manager_guidance=manager_guidance,
-                code=code,
-                test_results=test_results,
-                success_threshold=success_threshold,
-                video_dir=state.get("video_dir", "output/videos"),
-                agent_opinions_context=agent_opinions_context,
-                tester_response=tester_response,
-            )
+        # Optional {shodan_rules_display} placeholder: render_template tolerates prompt
+        # files that omit it (renders empty) without a duplicated fallback format() call.
+        task_template = self.render_template(
+            prompt_dict["task_template"],
+            manager_guidance=manager_guidance,
+            code=code,
+            test_results=test_results,
+            success_threshold=success_threshold,
+            video_dir=state.get("video_dir", "output/videos"),
+            agent_opinions_context=agent_opinions_context,
+            tester_response=tester_response,
+            shodan_rules_display=shodan_rules_display,
+        )
         system_prompt = prompt_dict["system"].format(
             success_threshold=success_threshold,
             video_dir=state.get("video_dir", "output/videos")
@@ -399,47 +393,34 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
 
         # ── Ground the verdict in the real number ──────────────────────────────────
         # Parse the actual reward from stdout (single source of truth) for the
-        # optimization threshold gate and the progress-aware failsafe below.
+        # progress-aware failsafe below; the verdict gates re-parse it themselves.
         _cur_env_idx = state.get("current_env_index", 0)
         _stdout_real = state.get("execution_stdout", "") or ""
-        _rm = re.search(r"RESULT:\s*mean_reward\s*=\s*(-?\d+(?:\.\d+)?)", _stdout_real)
-        _real_reward = float(_rm.group(1)) if _rm else None
-        # OPTIMIZATION GATE: an env passes optimization ONLY if the real reward meets the
-        # threshold. No "the threshold is the bug" rhetoric can override the math. (Validation
-        # just checks the code runs; demo is judged on the video, not the reward.)
-        # A5 metric lock: goal-conditioned envs are scored by a SUCCESS RATE in [0,1].
-        # If the Coder drifted to reporting the raw sparse reward (e.g. -45) instead of the
-        # is_success fraction, catch it deterministically rather than judging apples vs oranges.
+        _real_reward = parse_result_line(_stdout_real)["value"]
         _envp_gate = self.config.environment_progression
         _ce_gate = _envp_gate[_cur_env_idx] if _envp_gate and _cur_env_idx < len(_envp_gate) else None
         _env_metric = getattr(_ce_gate, "metric", "reward") if _ce_gate else "reward"
-        _wrong_metric = (current_phase == "optimization" and _env_metric == "success_rate"
-                         and _real_reward is not None and (_real_reward < 0.0 or _real_reward > 1.0))
-        if current_phase == "optimization" and (_real_reward is None or _real_reward < success_threshold or _wrong_metric):
-            if approved:
-                if _wrong_metric:
-                    print(f"[yellow]⚖️  Metric lock: success_rate env but RESULT={_real_reward} (outside [0,1]) -> REJECT[/yellow]")
-                    feedback = ("[Metric lock] This environment is scored by SUCCESS RATE in [0,1], but the "
-                                "RESULT line reported {}. Report the is_success fraction over the eval episodes, "
-                                "NOT the raw sparse reward.\n\n".format(_real_reward)) + feedback
-                else:
-                    print(f"[yellow]⚖️  Threshold gate: optimization reward {_real_reward} < {success_threshold} -> APPROVE overridden to REJECT[/yellow]")
-                    feedback = ("[Threshold gate] mean_reward={} is below the {} optimization threshold - "
-                                "not approved yet, keep training.\n\n".format(_real_reward, success_threshold)) + feedback
-            approved = False
 
-        # RESUME GATE: a checkpoint existed but the chunk did not provably resume it
-        # (no RESUMED: buffer_transitions>0 in stdout). The run did NOT accumulate -
-        # a passing reward here would be a fluke and approving it would teach the team
-        # that from-scratch chunks are fine. Deterministic, like the threshold gate.
-        if (current_phase == "optimization" and state.get("resume_required", False)
-                and not state.get("resume_ok", True)):
-            if approved:
-                print("[yellow]🔗 Resume gate: checkpoint existed but resume was not verified -> APPROVE overridden to REJECT[/yellow]")
-            feedback = ("[Resume gate] A checkpoint exists but this chunk did not verifiably resume it "
-                        "(missing/zero 'RESUMED: buffer_transitions=N'). Training did NOT accumulate. "
-                        "Fix the resume (ALGO.load + load_replay_buffer + RESUMED print) before anything else.\n\n") + feedback
-            approved = False
+        # DETERMINISTIC VERDICT GATES: the math that overrides an LLM APPROVE — threshold,
+        # metric lock ([0,1] for success_rate), resume (checkpoint must accumulate), and the
+        # demo-reward gate (demo's measured metric must clear the threshold; else regress to
+        # optimization). Extracted to verdict_gates so the quad Reviewer and the duo Director
+        # share one implementation and it stays unit-testable without an API key.
+        _gate = apply_verdict_gates(
+            approved,
+            phase=current_phase,
+            stdout=_stdout_real,
+            success_threshold=success_threshold,
+            env_metric=_env_metric,
+            resume_required=state.get("resume_required", False),
+            resume_ok=state.get("resume_ok", True),
+            demo_reward=state.get("demo_reward"),
+        )
+        if _gate.feedback_prefix:
+            if approved and not _gate.approved:
+                print(f"[yellow]⚖️  Verdict gate '{_gate.gate_fired}' overrode APPROVE -> REJECT[/yellow]")
+            feedback = _gate.feedback_prefix + feedback
+        approved = _gate.approved
 
         # Clean my_opinion too
         if my_opinion:
@@ -631,7 +612,17 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
         elif improved:
             consecutive_failures = 0  # real progress this iteration -> don't burn the skip budget
             last_failure_type = ""
+        elif _gate.gate_fired == "demo" and _gate.demo_below_threshold:
+            # Demo measured BELOW threshold: the model ALREADY proved progress (it cleared
+            # optimization to reach the demo) and the Manager regresses demo->optimization on
+            # demo_below_threshold, so hold the counter steady - an oscillation around the
+            # threshold must not trigger a spurious env skip.
+            consecutive_failures = state.get("consecutive_failures", 0)
+            last_failure_type = ""
         else:
+            # Everything else, INCLUDING a demo with NO measurement (demo_reward is None: crash /
+            # timeout / no saved model). That does NOT regress, so a deterministically broken demo
+            # would loop forever with a frozen counter - it must advance so the failsafe can skip.
             consecutive_failures = state.get("consecutive_failures", 0) + 1
             # Classify failure type
             test_results = state.get("test_results", "")
@@ -667,11 +658,12 @@ Remove any thinking tags, markdown code blocks, or extra text. Return ONLY the J
             "reviewer_tester_instruction": tester_instruction,  # For tester in next iteration
             "shodan_rules": shodan_rules,  # Updated Divine Codex
             "consecutive_failures": consecutive_failures,
-            "last_failure_type": last_failure_type,
             "best_reward_this_env": best_reward,
             "best_reward_env_index": _cur_env_idx,
             "recent_attempts": recent_attempts,   # A3 Coder self-memory
             "failure_history": failure_history,   # A7 escalation ladder
+            # Goal A: demo-reward gate -> Manager regresses demo->optimization when set
+            "demo_below_threshold": _gate.demo_below_threshold,
         }
         result.update(history_update)
         result.update(opinion_update)

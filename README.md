@@ -36,23 +36,28 @@ A **Manager** assigns tasks, a **Coder** writes training scripts, a **Tester** e
                    +--+      next phase / next env
 ```
 
+**Two pipeline topologies** (pick with `pipeline: quad|duo` in the config):
+- **quad** (above, default) — `Manager → Coder → Tester → Reviewer`: four LLM roles, the Tester paraphrases the run for the Reviewer.
+- **duo** — `Director → Coder → Executor`: collapses the Manager+Reviewer into ONE frontier call (the **Director** judges the last run *and* writes the next task) and replaces the Tester LLM with a deterministic **Executor**, so the Coder reads the container's **raw stdout/stderr** directly — no "broken telephone". Run it with `config/duo_robot_seeded.yaml`. Both pipelines share the same gates, skills, checkpoint-resume and demo machinery.
+
 Each environment goes through three phases:
 
 | Phase | Goal | Timeout |
 |-------|------|---------|
 | **Validation** | Does the code run without errors? | ~2% of base timeout |
 | **Optimization** | Reach the reward threshold, save model | Full timeout |
-| **Demo** | Deterministic video recording of saved model | 5 minutes |
+| **Demo** | Record video **+ confirm the measured metric clears the threshold** | 5 minutes |
 
-The Coder always saves the trained model (`best_model.zip`) after optimization. In the demo phase, the Tester bypasses LLM code generation entirely and runs a **deterministic video recording script** that auto-detects the SB3 algorithm, loads the saved model, and records evaluation episodes with RecordVideo. This eliminates the demo-phase loops that occurred when LLM-generated video code failed repeatedly.
+The Coder always saves the trained model (`best_model.zip`) after optimization. In the demo phase, the pipeline bypasses LLM code generation entirely and runs a **deterministic recording+eval script** that auto-detects the SB3 algorithm, loads the saved model, evaluates **20 fixed-seed episodes** (recording video for the first 5), and prints a **metric-aware** RESULT (`success_rate` for goal envs, else `mean_reward`). A **demo-reward gate** then requires that measured metric to clear the threshold too — a convincing-looking video whose policy still misses the goal no longer counts as solved; instead the env **regresses to optimization** (the checkpoint keeps training). This both eliminates the old demo-phase loops *and* closes the "passed on video alone" hole.
 
-After all three phases pass, the team advances to the next environment.
+After all three phases pass (demo metric included), the team advances to the next environment.
 
 ---
 
 ## Key Features
 
-- **Environment progression** — Agents solve increasingly difficult Gymnasium environments (CartPole -> Pendulum -> MountainCar -> ...)
+- **Environment progression** — Agents solve increasingly difficult Gymnasium environments (CartPole -> Pendulum -> MountainCar -> ..., PyBullet robot arms, quadrotor drones)
+- **Recipe-free prompts (duo)** — `config/duo_prompts.yaml` contains NO env→algorithm tables, no step-count tables, no ready-made solutions: the prompts teach *method* (inspect the env's spaces/spec first, measure, escalate, inscribe earned skills) and harness *facts* only. Environment-specific knowledge lives exclusively in the SkillStore — seeded explicitly for capability runs, earned from scratch in blind runs. A smoke-test guard keeps recipes from leaking back in.
 - **Multi-phase training** — Fast validation before committing to long optimization runs
 - **SKILL memory** — Procedural skills (when-to-use / procedure / pitfalls / verification), not flat values, are injected into the **Coder** and the **Manager**, and persist to disk across runs. SHODAN adds/improves/verifies/removes them; `verified` skills are pinned AND take precedence over any other feedback — including SHODAN's own directives. Replaces the old flat "Divine Codex".
 - **Pre-Docker lint** — A fast deterministic check (env name / imports / syntax / **SB3 kwarg validation against curated signatures** / the checkpoint-resume contract) gives the Coder instant feedback *before* the expensive Docker run — a "pre-Tester" that catches the #1 time-wasters in milliseconds (it does not replace the Tester's semantic diagnosis).
@@ -63,8 +68,8 @@ After all three phases pass, the team advances to the next environment.
 - **Conversation logging** — Full GitHub-flavored markdown logs of every iteration, shareable and readable, with demo videos embedded inline
 - **Live view** — Optional read-only browser dashboard that re-renders the conversation log in real time (great for presentations) — see `scripts/live_view.py`
 - **Docker sandbox** — Isolated GPU execution with network disabled and code mounted read-only
-- **Manager's Playbook** — Learned recipes from solved environments inform future tasks
-- **Automated diagnostics** — Rule-based error detection catches common failures before LLM analysis
+- **Procedural skills** — On env-solve the Manager distils a verified, persistent procedural skill (algo + policy + HER + checkpoint + metric) into the SkillStore, injected into the next env's Coder (this replaced the old regex "playbook")
+- **Automated diagnostics** — Rule-based, phase-aware error detection catches common failures before LLM analysis
 - **Failsafe skip** — Automatically advances to next environment after too many consecutive failures
 
 ---
@@ -169,6 +174,8 @@ $env:PYTHONUTF8=1; python main.py
 | `config/night_run.yaml` | **Overnight run** — full hard env progression, honest scoreboard (solved vs skipped) |
 | `config/robot_arm_blind.yaml` | **Intelligence test** — panda-gym manipulation (sparse + goal-conditioned). No HER hint: does the team discover the structural fix itself? |
 | `config/robot_arm_seeded.yaml` | **Capability demo** — same, but the Codex is pre-seeded with the HER recipe → solves PandaPush/PickAndPlace |
+| `config/duo_robot_seeded.yaml` | **Duo pipeline** — the seeded panda progression run as Director → Coder → Executor (1 LLM role; Coder reads raw output) |
+| `config/duo_smoke.yaml` | **Duo 2-iteration sanity** — checks the duo wiring (needs Docker + Ollama) |
 
 ```bash
 # Reliable short demo for a presentation
@@ -216,10 +223,12 @@ environment_progression:
     success_threshold: 475
     execution_timeout: 300    # seconds
     device: "cpu"             # cpu | gpu | auto
-  - name: "Pendulum-v1"
-    success_threshold: -300
-    execution_timeout: 300
-    device: "cpu"
+  - name: "PandaPush-v3"
+    success_threshold: 0.7
+    metric: "success_rate"    # reward | success_rate (goal-conditioned envs use the is_success fraction in [0,1])
+    execution_timeout: 1800
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]  # optional env-family tags for SKILL retrieval
 ```
 
 ### Agent models

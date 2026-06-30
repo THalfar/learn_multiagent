@@ -1,0 +1,163 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROBOTTIKÄSI — DUO + BLIND (Director -> Coder -> Executor, EI seedattua tietoa)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Yleisen älyn koe: recipe-free-promptit (config/duo_prompts.yaml sisältää NOLLA
+# env-/algoritmimainintaa) + TYHJÄ skill-kirjasto. Director (Grok) ja Coder (qwen)
+# joutuvat johtamaan lähestymistavan discovery-printistä (spaces, spec, info-dict)
+# ja mitatuista tuloksista. Kysymys: löytyykö HER ilman että kukaan kertoo siitä?
+# Kontrasti: duo_robot_seeded.yaml = sama ajo HER-skilli annettuna.
+#
+# Aja:  $env:PYTHONUTF8=1; python main.py config/duo_robot_blind.yaml
+# Live: python scripts/live_view.py output/<run_id>
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Pipeline-topologia: duo = Director -> Coder -> Executor (1 LLM-rooli).
+pipeline: "duo"
+
+environment_progression:
+
+  - name: "PandaReach-v3"
+    max_episode_steps: 50
+    success_threshold: 0.90        # SUCCESS RATE (0..1), ei reward!
+    metric: "success_rate"
+    execution_timeout: 600
+    obs_dim: 6
+    action_type: "continuous"
+    action_dim: 3
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+  - name: "PandaPush-v3"
+    max_episode_steps: 50
+    success_threshold: 0.50        # SUCCESS RATE — ratkeaa HER:llä (jos sen keksii)
+    metric: "success_rate"
+    execution_timeout: 1200
+    obs_dim: 18
+    action_type: "continuous"
+    action_dim: 3
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+  - name: "PandaPickAndPlace-v3"
+    max_episode_steps: 50
+    success_threshold: 0.40        # SUCCESS RATE — kova
+    metric: "success_rate"
+    execution_timeout: 1800
+    obs_dim: 18
+    action_type: "continuous"
+    action_dim: 4
+    device: "auto"
+    tags: ["goal", "her", "manipulation", "robotics"]
+
+environment:
+  name: "PandaReach-v3"
+  max_episode_steps: 50
+  obs_dim: 6
+  action_type: "continuous"
+  action_dim: 3
+  device: "auto"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 300             # Yöajo: reilusti tilaa - checkpoint-resume kasaa edistystä,
+                                  # progress-aware failsafe hoitaa aidosti jumittuneet envit
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true
+  show_env_switch_chatter: true
+
+  history_window:
+    manager: 3      # käyttämätön duossa (ei Manager-nodea)
+    coder: 2        # qwen3.6 sietää oman historiansa -> oppii omista hylätyistä yrityksistä
+    tester: 2       # käyttämätön duossa (ei Tester-nodea)
+    reviewer: 30    # Director näkee pitkän kontekstin (se on ainoa LLM-aivo)
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  agent_opinions:
+    enabled: true
+    manager: true   # käyttämätön duossa
+    coder: true     # duossa Coderilla on ääni tiimichatissä
+    tester: false   # käyttämätön duossa
+    reviewer: true
+
+llm:
+  model: "grok-4.3"
+
+agent_llm:
+  manager:   "qwen3.6:27b"   # käyttämätön duossa, mutta AgentLLMConfig vaatii kaikki 4 avainta
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"   # käyttämätön duossa
+  reviewer:  "api"
+
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "qwen3.6:27b"
+    manager:
+      models:
+        - "qwen3.6:27b"
+    tester:
+      models:
+        - "qwen3.6:27b"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "qwen3.6:27b": { num_ctx: 32768 }
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.05
+  validation_timeout_floor: 90    # panda-gym/pybullet + algo-init syö ~20-40s kiinteää käynnistystä
+  demo_timeout_seconds: 300       # skaalautuu: max(tämä, 0.5 x env timeout)
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/duo_prompts.yaml"
+
+failsafe:
+  skip_after_consecutive_failures: 25   # Reilusti yrityksiä per env (laskuri nollautuu kun metric paranee)
+
+# BLIND: ei seedattua Codexia eikä skillejä — kaikki tieto on ANSAITTAVA ajoista.
+initial_codex_rules: []
+
+# Oma skills_dir -> blind-ajon oppiminen ei sekoitu seeded-ajoihin (puhdas A/B).
+# Direktorin tislaamat skillit kertyvät tänne ajojen yli.
+skills_dir: "skills/duo_blind"
+initial_skills: []
+
+test_name: "duo_robot_blind"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true
