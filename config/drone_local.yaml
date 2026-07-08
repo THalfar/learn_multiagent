@@ -1,0 +1,147 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# DRONE — EKAT LENNÄTYKSET, TÄYSIN PAIKALLINEN (ei Grokia / ei APIa)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Ensimmäinen drone-yöajo. Sama proven täysin-paikallinen quad-tiimi joka ratkaisi
+# Reach+Push (qwen3.6:27b x4, 0 mallinvaihtoa), nyt osoitettuna quadrotoriin.
+#
+# Env: hover-aviary-v0 (gym-pybullet-drones). DENSE reward, Box-obs (EI goal/HER):
+#   - reward = max(0, 2 - ||[0,0,1] - pos||^4)  -> max ~2.0/step
+#   - episodi ~240 steppiä (8s @ 30Hz) -> teoreettinen max ~480
+#   - neutraali toiminta (nollat) ~334; kynnys 380 = AIDOSTI opittu tiukka leijunta
+#   - metriikka = REWARD (ei success_rate), algo SAC/TD3 (continuous), EI HER
+#
+# Uudet ominaisuudet käytössä tässä ajossa:
+#   - PARAMS/STATS-sopimus: Coder valitsee aloitus-hyperparametrit env-discoverysta ja
+#     printtaa "PARAMS: ...", Reviewer säätää niitä raportoidun "STATS: ..." datan pohjalta
+#   - lint-järkevyysrajat hyperparametreille (ei learning_rate=10 -tyyppisiä)
+#
+# Videot: enabled -> demo-vaiheessa Tester tallentaa 5 episodin lentovideon.
+#
+# Aja:  $env:PYTHONUTF8=1; python main.py config/drone_local.yaml
+# Live: python scripts/live_view.py output/<run_id>
+# ═══════════════════════════════════════════════════════════════════════════════
+
+pipeline: "quad"   # proven quad-tiimi (Manager->Coder->Tester->Reviewer)
+
+environment_progression:
+
+  - name: "hover-aviary-v0"
+    max_episode_steps: 240          # env-sisäinen (8s @ 30Hz); metadata learning_starts-vihjeelle
+    success_threshold: 380          # REWARD (episodituotto); neutraali ~334, max ~480
+    metric: "reward"
+    execution_timeout: 900          # optimization-chunkin wall-clock; validation = max(90, 5%)
+    obs_dim: 72
+    action_type: "continuous"
+    action_dim: 4
+    device: "auto"
+    tags: ["drone", "quadrotor", "continuous", "dense"]
+
+environment:
+  name: "hover-aviary-v0"
+  max_episode_steps: 240
+  obs_dim: 72
+  action_type: "continuous"
+  action_dim: 4
+  device: "auto"
+
+video:
+  enabled: true
+  output_dir: "output/videos"
+
+agents:
+  max_iterations: 60              # reilusti tilaa; SAC-chunkit kasaavat edistystä checkpoint-resumella
+  show_thinking: false
+  show_coder_output: false
+  show_model_loading: true
+  show_env_switch_chatter: true
+
+  history_window:
+    manager: 3
+    coder: 2
+    tester: 0      # tabula rasa: ei papukaijaile vanhoja analyysejaan
+    reviewer: 20
+    env_switch_reports: 5
+    agent_opinions: 10
+
+  agent_opinions:
+    enabled: true
+    manager: true
+    coder: false
+    tester: false
+    reviewer: true
+
+llm:
+  model: "grok-4.3"   # EI käytössä (reviewer ei ole "api"); kenttä vaaditaan silti
+
+# KAIKKI PAIKALLISIA, REVIEWER MUKAAN LUKIEN -> 0 mallinvaihtoa, co-resident 32GB.
+agent_llm:
+  manager:   "qwen3.6:27b"
+  coder:     "qwen3.6:27b"
+  tester:    "qwen3.6:27b"
+  reviewer:  "qwen3.6:27b"   # PAIKALLINEN SHODAN — EI "api"
+
+adaptive_model_switching:
+  enabled: false
+  chaos_mode: false
+  triggers:
+    repeated_error_threshold: 2
+    no_improvement_iterations: 3
+    repetition_loop_threshold: 2
+    timeout_threshold: 2
+  model_pools:
+    coder:
+      models:
+        - "qwen3.6:27b"
+    manager:
+      models:
+        - "qwen3.6:27b"
+    tester:
+      models:
+        - "qwen3.6:27b"
+
+ollama:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  keep_alive: "10m"
+  options:
+    num_gpu: 999
+    num_thread: 8
+  model_options:
+    "qwen3.6:27b": { num_ctx: 32768 }
+
+gpu:
+  enabled: true
+  max_vram_gb: 4.0
+  warn_vram_gb: 2.0
+
+training_phases:
+  enabled: true
+  validation_timeout_multiplier: 0.05
+  validation_timeout_floor: 90    # pybullet + SAC-init syö ~20-40s kiinteää käynnistystä
+  demo_timeout_seconds: 300
+
+shodan_rules:
+  enabled: true
+  max_rules: 20
+
+prompts_file: "config/opus_prompts.yaml"
+
+failsafe:
+  skip_after_consecutive_failures: 15   # laskuri nollautuu kun reward paranee
+
+# EI HER-seediä: hover on dense-reward Box-obs, ei goal-conditioned. Annetaan tiimin
+# valita SAC/TD3 itse (opus_prompts ohjaa continuous->SAC/TD3) ja inscribata oma skill.
+# Oma skills_dir -> ei sekoitu manipulaatio-ajojen oppimiseen.
+skills_dir: "skills/drone"
+
+test_name: "drone_local"
+
+verbose:
+  tester_wake_up: false
+  gpu_validation: false
+  docker_sandbox_info: false
+  gpu_vram_stats: false
+  video_file_check: false
+  doc_analysis_result: false
+  shodan_response_in_results: false
+  shodan_rules: true

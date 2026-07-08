@@ -38,6 +38,7 @@ DEFAULT_ALLOWED_IMPORTS: Set[str] = {
     # scientific / RL stack installed in the container
     "numpy", "scipy", "pandas", "torch", "torchvision",
     "gymnasium", "gym", "stable_baselines3", "sb3_contrib", "panda_gym",
+    "gym_pybullet_drones", "transforms3d",
     "matplotlib", "seaborn", "optuna", "cv2", "tqdm", "rich",
     "tensorboard", "imageio", "moviepy",
 }
@@ -83,6 +84,68 @@ SB3_LEARN_KWARGS = {"total_timesteps", "callback", "log_interval", "tb_log_name"
 # Valid keys of replay_buffer_kwargs={...} when replay_buffer_class=HerReplayBuffer
 HER_RBK_KEYS = {"n_sampled_goal", "goal_selection_strategy", "copy_info_dict",
                 "handle_timeout_termination", "optimize_memory_usage"}
+
+# ── Hyperparameter sanity FLOOR (guardrail for LLM-governed tuning). ──────────
+# NOT a tuner and NOT an opinion about good values - only rejects literals that are
+# physically broken (learning_rate=10, gamma=2, batch_size=0) and would waste a
+# container run or silently train a useless policy. A value the LLM cannot justify
+# but is *in range* is left alone (the metric curve judges it). Only literal numbers
+# are checked; a variable / schedule fn / 'auto' string is skipped (can't be sure).
+_HP_BOUNDS = {
+    "learning_rate":   (1e-7, 1.0),
+    "ent_coef":        (0.0, 1e3),         # numeric only; ent_coef='auto' is a string -> skipped
+    "vf_coef":         (0.0, 1e3),
+    "clip_range":      (1e-4, 1.0),
+    "batch_size":      (1, 1_000_000),
+    "buffer_size":     (1, 100_000_000),
+    "learning_starts": (0, 50_000_000),
+    "n_steps":         (1, 10_000_000),
+    "n_epochs":        (1, 1000),
+    "gradient_steps":  (-1, 1_000_000),
+    "n_sampled_goal":  (1, 64),
+}
+# Probabilities / rates that must live in (0, 1].
+_HP_UNIT_INTERVAL = {"gamma", "tau", "gae_lambda"}
+
+
+def _const_num(node: ast.AST):
+    """Return the float value of a numeric literal (incl. a unary-minus literal),
+    or None for anything non-literal (variable, call, 'auto' string, schedule fn)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _const_num(node.operand)
+        return -inner if inner is not None else None
+    return None
+
+
+def check_hyperparam_sanity(tree: ast.AST) -> List[str]:
+    """Reject clearly-insane hyperparameter LITERALS on SB3 algo constructors.
+
+    A sanity floor for the LLM-governed tuning loop: it fires only on values outside
+    physically-reasonable ranges (e.g. learning_rate=10, gamma=2, batch_size=0), never
+    on a merely-suboptimal-but-valid value. Returns a list of violations (empty = sane).
+    """
+    out: List[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _call_name(node.func) not in SB3_ALGO_KWARGS:   # only algo constructors carry these
+            continue
+        for kw in node.keywords:
+            if kw.arg is None:
+                continue
+            v = _const_num(kw.value)
+            if v is None:
+                continue
+            if kw.arg in _HP_UNIT_INTERVAL:
+                if not (0.0 < v <= 1.0):
+                    out.append(f"{kw.arg}={v:g} is out of range - it must be in (0, 1].")
+            elif kw.arg in _HP_BOUNDS:
+                lo, hi = _HP_BOUNDS[kw.arg]
+                if v < lo or v > hi:
+                    out.append(f"{kw.arg}={v:g} is insane - expected within [{lo:g}, {hi:g}].")
+    return out
 
 
 @dataclass
@@ -292,6 +355,11 @@ def lint_code(
     # 3b. SB3 kwarg names — hallucinated kwargs are a guaranteed TypeError that
     #     would only surface after a wasted container start (or 7 wasted iterations).
     _check_sb3_kwargs(tree, res, code)
+
+    # 3b-2. Hyperparameter sanity floor — the LLM governs hyperparameters now, so
+    #       catch physically-broken literals (learning_rate=10, gamma=2) before Docker.
+    for v in check_hyperparam_sanity(tree):
+        res.errors.append(f"[HYPERPARAM] {v}")
 
     # 3c. Checkpoint-resume contract (optimization phase, checkpoint exists).
     if require_resume:

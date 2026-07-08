@@ -49,3 +49,40 @@ def parse_result_line(stdout: Optional[str]) -> ResultLine:
         "std": float(std_m.group(1)) if std_m else None,
         "episodes": int(eps_m.group(1)) if eps_m else None,
     }
+
+
+# ── Optional telemetry lines: "STATS:" and "PARAMS:" ─────────────────────────
+# The Coder may print, alongside RESULT, two diagnostic lines the Manager/Reviewer
+# requested so the LLM can GOVERN hyperparameters from data instead of guessing:
+#   PARAMS: learning_rate=3e-4, batch_size=256, gamma=0.99   (the hyperparameters it chose)
+#   STATS:  ep_len_mean=180.5, action_sat=0.31, success_last100=0.6   (run diagnostics)
+# Both are flat "key=number" lists (the same shape as RESULT) so they parse with one
+# regex and never need fragile JSON. Non-numeric values (e.g. ent_coef=auto) are simply
+# skipped — only measured numbers carry signal. Absent line -> empty dict (a no-op).
+_KV_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
+
+
+def parse_kv_line(stdout: Optional[str], label: str) -> dict:
+    """Parse a 'LABEL: k=v, k=v, ...' telemetry line into {k: float}.
+
+    Scans the FIRST line whose stripped text starts with '<label>:' (case-insensitive)
+    and pulls every key=number pair from it. Returns {} when the line is absent, so a
+    caller can treat 'no telemetry' the same as 'no keys'.
+    """
+    text = stdout or ""
+    prefix = label.upper() + ":"
+    for line in text.splitlines():
+        s = line.strip()
+        if s.upper().startswith(prefix):
+            return {k: float(v) for k, v in _KV_RE.findall(s[len(label) + 1:])}
+    return {}
+
+
+def parse_stats_line(stdout: Optional[str]) -> dict:
+    """Run-diagnostics the Coder reported (ep_len_mean, action_sat, losses, ...)."""
+    return parse_kv_line(stdout, "STATS")
+
+
+def parse_params_line(stdout: Optional[str]) -> dict:
+    """The numeric hyperparameters the Coder chose this run (learning_rate, ...)."""
+    return parse_kv_line(stdout, "PARAMS")

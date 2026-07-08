@@ -5,7 +5,7 @@ import subprocess
 import platform
 from pathlib import Path
 from .base import BaseAgent
-from src.utils.result_parser import parse_result_line
+from src.utils.result_parser import parse_result_line, parse_stats_line, parse_params_line
 from rich import print
 from rich.markup import escape as rich_escape
 
@@ -1934,6 +1934,24 @@ for vf in video_files:
                         _sps = round(_steps_done / execution_duration, 1)
                         result_dict["measured_sps"] = _sps
                         print(f"[dim]📈 Cumulative: {result_dict['total_env_steps']:,} steps this env | measured ~{_sps} steps/s[/dim]")
+
+            # ── REPORTED PARAMS / STATS (LLM-governed tuning telemetry) ──────────
+            # The Coder may print "PARAMS: k=v, ..." (the hyperparameters it chose) and
+            # "STATS: k=v, ..." (run diagnostics the Manager/Reviewer requested). Surface
+            # them verbatim on the test_results channel that BOTH the Manager and the
+            # Reviewer already read, so SHODAN can govern hyperparameters from data rather
+            # than guessing - no new state channel needed.
+            _params = parse_params_line(stdout)
+            _stats = parse_stats_line(stdout)
+            if _params or _stats:
+                _bits = []
+                if _params:
+                    _bits.append("PARAMS " + ", ".join(f"{k}={v:g}" for k, v in _params.items()))
+                if _stats:
+                    _bits.append("STATS " + ", ".join(f"{k}={v:g}" for k, v in _stats.items()))
+                _line = "=== REPORTED " + " | ".join(_bits) + " ==="
+                result_dict["test_results"] = test_results + "\n\n" + _line
+                print(f"[dim]🎛️  {_line}[/dim]")
 
             # After optimization phase: search for saved model files
             if current_phase == "optimization":

@@ -1,0 +1,117 @@
+{
+  "skills": [
+    {
+      "id": "float32-casting-for-sb3-stability",
+      "name": "Float32 Casting for SB3 Stability",
+      "when_to_use": "Gymnasium envs output float64 observations, causing PyTorch autograd instability in SB3",
+      "procedure": "VecNormalize.load() promotes observations to float64 because its internal stats are float64. CRITICAL: Immediately after loading, cast the stats: vec_env.ob_mean = vec_env.ob_mean.astype(np.float32); vec_env.ob_std = vec_env.ob_std.astype(np.float32). This stops promotion at the source. Keep explicit obs casting before predict as a safety net.",
+      "pitfalls": "Skipping this causes NaN gradients, policy collapse, and deterministic crash loops regardless of timesteps or architecture",
+      "verification": "No float64 warnings; training and eval both proceed without gradient explosions or reward drops; episode lengths vary instead of fixing at minimum steps",
+      "status": "proposed",
+      "confidence": 0.5,
+      "source_env": "",
+      "created_iter": 7,
+      "last_validated_iter": -1,
+      "tags": [
+        "dtype",
+        "stability",
+        "sb3",
+        "float64"
+      ]
+    },
+    {
+      "id": "sac-action-saturation-recovery",
+      "name": "SAC Action Saturation Recovery",
+      "when_to_use": "Continuous control envs where action_saturation > 0.8 and episodes terminate prematurely with max-thrust/crash behavior",
+      "procedure": "Reduce learning_rate to 1e-4, ensure ent_coef='auto'. Monitor entropy; if policy saturates, the critic is overconfident in boundary actions. Stabilize updates before scaling timesteps or widening networks.",
+      "pitfalls": "Increasing timesteps or architecture while saturated only cements the crash policy; always fix LR first",
+      "verification": "action_saturation drops below 0.5, episode lengths increase beyond minimum steps, entropy stabilizes near target_entropy",
+      "status": "proposed",
+      "confidence": 0.5,
+      "source_env": "",
+      "created_iter": 15,
+      "last_validated_iter": -1,
+      "tags": [
+        "sac",
+        "saturation",
+        "continuous-control",
+        "hyperparameter-tuning"
+      ]
+    },
+    {
+      "id": "gpu-enforcement-buffer-hygiene-on-hp-shifts",
+      "name": "GPU Enforcement & Buffer Hygiene on HP Shifts",
+      "when_to_use": "Container has CUDA but VRAM=0, or learning_rate/architecture changes significantly mid-training",
+      "procedure": "When learning_rate changes by >10x or train_freq/batch_size shifts significantly, unconditionally purge the replay buffer (.pkl) before resuming. Keep model weights and VecNormalize stats for continuity. Stale off-policy data guarantees critic collapse and entropy rebound. Only resume buffers when hyperparameters remain identical to the checkpoint.",
+      "pitfalls": "Resuming old buffers with new LR causes immediate policy collapse; CPU fallback masks true training speed and wastes wall-clock time",
+      "verification": "VRAM > 0GB, no timeout on 200k+ steps, reward curve stabilizes/increases post-resume without sudden drops",
+      "status": "proposed",
+      "confidence": 0.5,
+      "source_env": "",
+      "created_iter": 16,
+      "last_validated_iter": -1,
+      "tags": [
+        "cuda",
+        "buffer-management",
+        "hyperparameter-shift",
+        "stability"
+      ]
+    },
+    {
+      "id": "override-artificial-time-limits-for-rl-convergen",
+      "name": "Override Artificial Time Limits for RL Convergence",
+      "when_to_use": "Episodes terminate prematurely due to env.spec.max_episode_steps being too short for policy learning (e.g., 4 steps)",
+      "procedure": "Gymnasium auto-wraps with TimeLimit using registry specs. To override: unwrap first then re-wrap (env = gym.wrappers.TimeLimit(gym.make('hover-aviary-v0').unwrapped, max_episode_steps=1000)), or pass max_episode_steps=1000 directly to gym.make(). Nesting TimeLimits causes the inner default to trigger first.",
+      "pitfalls": "Training on artificially short episodes causes reward collapse and prevents credit assignment; never accept default time limits blindly",
+      "verification": "Episode lengths exceed previous caps; info dict no longer shows TimeLimit.truncated at step 4; reward curve begins to climb",
+      "status": "proposed",
+      "confidence": 0.5,
+      "source_env": "",
+      "created_iter": 17,
+      "last_validated_iter": -1,
+      "tags": [
+        "time-limit",
+        "env-config",
+        "rl-convergence"
+      ]
+    },
+    {
+      "id": "explicit-cuda-enforcement-timelimit-override",
+      "name": "Explicit CUDA Enforcement & TimeLimit Override",
+      "when_to_use": "Container has CUDA but VRAM=0, or env.spec.max_episode_steps modification fails post-gym.make",
+      "procedure": "Force device='cuda' if torch.cuda.is_available(). Wrap base env with gym.wrappers.TimeLimit(env, max_episode_steps=1000) immediately after gym.make() to bypass baked-in TimeLimit wrappers.",
+      "pitfalls": "device='auto' silently falls back to CPU in some SB3 versions; modifying spec.post-make is ignored by Gymnasium's wrapper chain",
+      "verification": "VRAM > 0GB, episodes exceed previous step caps, training speed increases significantly",
+      "status": "proposed",
+      "confidence": 0.5,
+      "source_env": "",
+      "created_iter": 18,
+      "last_validated_iter": -1,
+      "tags": [
+        "cuda",
+        "time-limit",
+        "env-config",
+        "performance"
+      ]
+    },
+    {
+      "id": "bypass-hardcoded-environment-time-limits",
+      "name": "Bypass Hardcoded Environment Time Limits",
+      "when_to_use": "Episodes truncate at fixed steps despite gym.make(max_episode_steps=X) or registry overrides, indicating internal env enforcement",
+      "procedure": "Wrap base env with a custom HorizonOverride class that tracks step_count in step(), forces truncated=False and info['TimeLimit.truncated']=False until desired limit, then yields control. Apply before observation/action wrappers.",
+      "pitfalls": "Gymnasium's TimeLimit wrapper passes through inner env truncation flags; kwarg overrides fail against hardcoded __init__ limits",
+      "verification": "Episode lengths exceed previous caps; info dict no longer shows early truncation; reward curve begins climbing past noise floor",
+      "status": "verified",
+      "confidence": 0.8,
+      "source_env": "",
+      "created_iter": 24,
+      "last_validated_iter": 25,
+      "tags": [
+        "time-limit",
+        "env-override",
+        "wrapper-chain",
+        "gymnasium"
+      ]
+    }
+  ]
+}
